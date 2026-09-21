@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>BharatVault | Intelligent Land Record & Validation System</title>
+  <style>
+    :root {
+      --primary: #1e3a8a;
+      --primary-hover: #172554;
+      --accent: #2563eb;
+      --sidebar-bg: #0f172a;
+      --sidebar-text: #94a3b8;
+      --bg: #f8fafc;
+      --card-bg: #ffffff;
+      --text: #0f172a;
+      --border: #e2e8f0;
+      --success: #16a34a;
+      --warning: #d97706;
+      --danger: #dc2626;
+    }
+
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); height: 100vh; overflow: hidden; }
+    .hidden { display: none !important; }
+
+    /* Auth View */
+    .auth-container {
+      display: flex; justify-content: center; align-items: center; height: 100vh;
+      background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+    }
+    .auth-card {
+      background: white; padding: 2.5rem; border-radius: 12px;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.2); width: 100%; max-width: 400px;
+    }
+    .auth-card h2 { margin-top: 0; color: var(--primary); text-align: center; }
+    .auth-card p { color: #64748b; font-size: 0.9rem; text-align: center; margin-bottom: 2rem; }
+    .form-group { margin-bottom: 1.2rem; }
+    .form-group label { display: block; font-weight: 600; font-size: 0.85rem; margin-bottom: 0.4rem; color: #475569; }
+    .form-group input, .form-group select, .form-group textarea { width: 100%; padding: 0.65rem; border: 1px solid var(--border); border-radius: 6px; font-size: 0.95rem; }
+
+    /* Shell */
+    .app-shell { display: flex; height: 100vh; }
+    aside.sidebar {
+      width: 250px; background: var(--sidebar-bg); color: var(--sidebar-text);
+      display: flex; flex-direction: column; flex-shrink: 0;
+    }
+    .sidebar-brand { padding: 1.5rem 1.2rem; border-bottom: 1px solid #1e293b; }
+    .sidebar-brand h1 { margin: 0; font-size: 1.25rem; color: white; }
+    .sidebar-brand span { font-size: 0.75rem; color: #38bdf8; text-transform: uppercase; font-weight: 700; }
+    .sidebar-menu { list-style: none; padding: 1rem 0; margin: 0; flex: 1; }
+    .sidebar-item {
+      padding: 0.75rem 1.25rem; display: flex; align-items: center; gap: 0.75rem;
+      cursor: pointer; color: var(--sidebar-text); font-weight: 500;
+    }
+    .sidebar-item:hover { background: #1e293b; color: white; }
+    .sidebar-item.active { background: var(--primary); color: white; font-weight: 600; }
+    .sidebar-footer { padding: 1rem 1.2rem; border-top: 1px solid #1e293b; display: flex; justify-content: space-between; align-items: center; }
+    .user-info .name { color: white; font-size: 0.85rem; font-weight: 600; }
+    .user-info .role { font-size: 0.75rem; color: #38bdf8; }
+
+    /* Content Area */
+    main.content-area { flex: 1; padding: 2rem; overflow-y: auto; }
+    .card { background: white; border-radius: 8px; padding: 1.5rem; border: 1px solid var(--border); margin-bottom: 1.5rem; }
+    .metrics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1.2rem; margin-bottom: 2rem; }
+    .metric-card { background: white; border: 1px solid var(--border); border-radius: 8px; padding: 1.2rem; text-align: center; }
+    .metric-card .num { font-size: 2.2rem; font-weight: 700; color: var(--primary); }
+    .metric-card .label { color: #64748b; font-size: 0.85rem; font-weight: 600; }
+
+    /* Upload & File List UI */
+    .file-drop-area {
+      border: 2px dashed #94a3b8; border-radius: 8px; padding: 2rem; text-align: center;
+      background: #f8fafc; cursor: pointer; transition: 0.2s;
+    }
+    .file-drop-area:hover { border-color: var(--accent); background: #f0fdf4; }
+    .file-list { margin-top: 1rem; list-style: none; padding: 0; }
+    .file-item {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 0.5rem 0.8rem; background: #f1f5f9; border-radius: 6px; margin-bottom: 0.5rem; font-size: 0.9rem;
+    }
+    .btn-remove-file { background: transparent; border: none; color: #ef4444; font-weight: bold; cursor: pointer; font-size: 1.1rem; }
+
+    table { width: 100%; border-collapse: collapse; background: white; border-radius: 8px; border: 1px solid var(--border); }
+    th, td { padding: 0.85rem 1rem; text-align: left; border-bottom: 1px solid var(--border); font-size: 0.9rem; }
+    th { background: #f1f5f9; color: #475569; }
+    .badge-status { padding: 0.2rem 0.6rem; border-radius: 12px; font-size: 0.75rem; font-weight: 600; }
+    .status-verified { background: #dcfce7; color: var(--success); }
+    .status-pending { background: #e0f2fe; color: var(--accent); }
+    .status-flagged { background: #fee2e2; color: var(--danger); }
+    .badge-flag { background: #fef3c7; color: var(--warning); padding: 0.2rem 0.5rem; border-radius: 4px; font-weight: 700; }
+
+    .btn { background: var(--primary); color: white; border: none; padding: 0.65rem 1.2rem; border-radius: 6px; cursor: pointer; font-weight: 500; }
+    .btn:hover { background: var(--primary-hover); }
+    .btn-sm { padding: 0.35rem 0.7rem; font-size: 0.8rem; }
+    .btn-logout { background: transparent; border: 1px solid #475569; color: #94a3b8; cursor: pointer; border-radius: 4px; padding: 0.3rem 0.6rem; }
+    .btn-logout:hover { background: #ef4444; color: white; }
+
+    .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 100; }
+    .modal-box { background: white; padding: 2rem; border-radius: 8px; width: 560px; max-width: 90%; max-height: 90vh; overflow-y: auto; }
+    .modal-actions { display: flex; gap: 0.5rem; margin-top: 1rem; }
+  </style>
+</head>
+<body>
+
+  <!-- Auth Panel -->
+  <div id="auth-panel" class="auth-container">
+    <div class="auth-card">
+      <h2>BharatVault</h2>
+      <p>Secure Portal for Land Record Validation</p>
+      <form id="login-form">
+        <div class="form-group">
+          <label>User ID / Username</label>
+          <input type="text" id="login-username" required autocomplete="username">
+        </div>
+        <div class="form-group">
+          <label>Password</label>
+          <input type="password" id="login-password" required autocomplete="current-password">
+        </div>
+        <button type="submit" class="btn" style="width:100%;">Sign In</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- App Shell -->
+  <div id="app-shell" class="app-shell hidden">
+    <aside class="sidebar">
+      <div class="sidebar-brand">
+        <h1>BharatVault</h1>
+        <span>DOLR Land Portal</span>
+      </div>
+      <ul class="sidebar-menu">
+        <li class="sidebar-item active" onclick="showTab('dashboard-view', event)">📊 Dashboard</li>
+        <li class="sidebar-item" onclick="showTab('upload-view', event)">📥 Ingest Document</li>
+        <li class="sidebar-item" onclick="showTab('records-view', event)">📑 Land Registry</li>
+        <li id="nav-users" class="sidebar-item hidden" onclick="showTab('users-view', event)">👥 User Access</li>
+        <li id="nav-audit" class="sidebar-item hidden" onclick="showTab('audit-view', event)">🛡️ Security Audit</li>
+      </ul>
+      <div class="sidebar-footer">
+        <div class="user-info">
+          <div class="name" id="display-name">User</div>
+          <div class="role" id="display-role">Role</div>
+        </div>
+        <button onclick="logout()" class="btn-logout">Exit</button>
+      </div>
+    </aside>
+
+    <main class="content-area">
+      <!-- Dashboard -->
+      <section id="dashboard-view" class="tab-panel">
+        <h2>System Dashboard</h2>
+        <div class="metrics-grid">
+          <div class="metric-card"><div class="num" id="m-total">0</div><div class="label">Total Records</div></div>
+          <div class="metric-card"><div class="num" id="m-verified">0</div><div class="label">Verified Records</div></div>
+          <div class="metric-card"><div class="num" id="m-pending">0</div><div class="label">Pending Verification</div></div>
+          <div class="metric-card"><div class="num" id="m-flagged">0</div><div class="label">Validation Flags</div></div>
+        </div>
+      </section>
+
+      <!-- Multi-Document Ingestion View -->
+      <section id="upload-view" class="tab-panel hidden">
+        <h2>Document Ingestion</h2>
+        <div class="card" style="max-width: 650px;">
+          <p>Select one or multiple land deeds/records to extract and validate.</p>
+          
+          <div class="file-drop-area" onclick="document.getElementById('file-input').click()">
+            <p style="margin: 0; font-weight: 500; color: #475569;">📁 Click here to browse and select files</p>
+            <small style="color: #94a3b8;">Accepts multiple PDFs, JPGs, PNGs</small>
+            <input type="file" id="file-input" multiple accept=".pdf,.png,.jpg,.jpeg,.txt" style="display:none;" onchange="handleFileSelect(event)">
+          </div>
+
+          <!-- Staged Files Queue -->
+          <ul id="staged-file-list" class="file-list"></ul>
+
+          <div style="margin-top: 1.2rem; display: flex; gap: 0.8rem; align-items: center;">
+            <button type="button" class="btn" id="upload-btn" onclick="submitFiles()" disabled>Extract & Validate Selected</button>
+            <button type="button" class="btn" style="background:#64748b;" onclick="clearAllFiles()">Clear All</button>
+            <span id="upload-status" style="font-size:0.85rem; color:#64748b;"></span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Registry -->
+      <section id="records-view" class="tab-panel hidden">
+        <h2>Land Record Registry</h2>
+        <table id="records-table">
+          <thead>
+            <tr>
+              <th>ID</th><th>Type</th><th>Status</th><th>Village</th><th>Khasra #</th>
+              <th>Owner Name</th><th>Total Area</th><th>Flags</th><th>Action</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </section>
+
+      <!-- User Management -->
+      <section id="users-view" class="tab-panel hidden">
+        <h2>User Provisioning</h2>
+        <div class="card" style="max-width: 500px;">
+          <form id="create-user-form">
+            <div class="form-group"><label>Full Name</label><input type="text" id="new-user-fullname" required></div>
+            <div class="form-group"><label>Username</label><input type="text" id="new-user-username" required></div>
+            <div class="form-group"><label>Password</label><input type="password" id="new-user-password" required></div>
+            <div class="form-group">
+              <label>Role</label>
+              <select id="new-user-role">
+                <option value="Clerk">Clerk</option>
+                <option value="Revenue Officer">Revenue Officer</option>
+                <option value="Admin">Admin</option>
+              </select>
+            </div>
+            <button type="submit" class="btn">Add User</button>
+          </form>
+        </div>
+        <table id="users-table">
+          <thead><tr><th>Username</th><th>Full Name</th><th>Role</th><th>Action</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </section>
+
+      <!-- Audit -->
+      <section id="audit-view" class="tab-panel hidden">
+        <h2>Security Audit Trail</h2>
+        <table id="audit-table">
+          <thead><tr><th>Time</th><th>User</th><th>Role</th><th>Action</th><th>Details</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </section>
+
+      <!-- Review Modal -->
+      <div id="review-modal" class="modal hidden">
+        <div class="modal-box">
+          <h3>Record Details & Verification</h3>
+          <form id="verify-form">
+            <input type="hidden" id="edit-id">
+            <div class="form-group"><label>Buyer / Owner Name</label><input type="text" id="edit-owner"></div>
+            <div class="form-group"><label>Seller Name</label><input type="text" id="edit-seller"></div>
+            <div class="form-group"><label>Khasra #</label><input type="text" id="edit-khasra"></div>
+            <div class="form-group"><label>Total Area</label><input type="number" step="0.01" id="edit-area"></div>
+            <div class="form-group"><label>Village</label><input type="text" id="edit-village"></div>
+            <div class="form-group"><label>Registration Date</label><input type="date" id="edit-reg-date"></div>
+            <div class="form-group"><label>Mutation Date</label><input type="date" id="edit-mut-date"></div>
+            <div class="modal-actions">
+              <button type="button" class="btn" style="background:var(--success);" onclick="saveRecord('Verified')">Approve</button>
+              <button type="button" class="btn" style="background:var(--warning);" onclick="saveRecord('Flagged')">Save Flagged</button>
+              <button type="button" class="btn" style="background:#64748b;" onclick="closeModal()">Cancel</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    let authToken = localStorage.getItem("bv_token") || "";
+    let userRole = localStorage.getItem("bv_role") || "";
+    let username = localStorage.getItem("bv_username") || "";
+    let fullName = localStorage.getItem("bv_name") || "";
+    let currentRecords = [];
+    let selectedFiles = [];
+
+    const headers = () => ({ "Authorization": `Bearer ${authToken}`, "Content-Type": "application/json" });
+
+    function handleAuthError(res) {
+      if (res.status === 401) {
+        alert("Your session has expired. Please sign in again.");
+        logout();
+        return true;
+      }
+      return false;
+    }
+
+    document.addEventListener("DOMContentLoaded", () => {
+      if (authToken) setupApp();
+
+      document.getElementById("login-form").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const fd = new FormData();
+        fd.append("username", document.getElementById("login-username").value);
+        fd.append("password", document.getElementById("login-password").value);
+
+        const res = await fetch("/api/auth/token", { method: "POST", body: fd });
+        if (res.ok) {
+          const data = await res.json();
+          authToken = data.access_token;
+          userRole = data.role;
+          username = data.username;
+          fullName = data.full_name;
+          localStorage.setItem("bv_token", authToken);
+          localStorage.setItem("bv_role", userRole);
+          localStorage.setItem("bv_username", username);
+          localStorage.setItem("bv_name", fullName);
+          setupApp();
+        } else {
+          alert("Invalid User ID or Password.");
+        }
+      });
+    });
+
+    // Multi-File Upload Queue Logic
+    function handleFileSelect(e) {
+      const files = Array.from(e.target.files);
+      files.forEach(f => {
+        if (!selectedFiles.some(existing => existing.name === f.name && existing.size === f.size)) {
+          selectedFiles.push(f);
+        }
+      });
+      renderSelectedFiles();
+    }
+
+    function removeFile(index) {
+      selectedFiles.splice(index, 1);
+      renderSelectedFiles();
+    }
+
+    function clearAllFiles() {
+      selectedFiles = [];
+      document.getElementById("file-input").value = "";
+      renderSelectedFiles();
+    }
+
+    function renderSelectedFiles() {
+      const list = document.getElementById("staged-file-list");
+      list.innerHTML = "";
+      selectedFiles.forEach((file, index) => {
+        const li = document.createElement("li");
+        li.className = "file-item";
+        li.innerHTML = `
+          <span>📄 <b>${file.name}</b> (${(file.size / 1024).toFixed(1)} KB)</span>
+          <button type="button" class="btn-remove-file" title="Remove" onclick="removeFile(${index})">✕</button>
+        `;
+        list.appendChild(li);
+      });
+      document.getElementById("upload-btn").disabled = selectedFiles.length === 0;
+    }
+
+    async function submitFiles() {
+      if (selectedFiles.length === 0) return;
+
+      const fd = new FormData();
+      selectedFiles.forEach(f => fd.append("files", f));
+
+      const uploadBtn = document.getElementById("upload-btn");
+      const statusEl = document.getElementById("upload-status");
+      uploadBtn.disabled = true;
+      statusEl.innerText = "Extracting and validating documents...";
+
+      try {
+        const res = await fetch("/api/records/upload", {
+          method: "POST",
+          headers: { "Authorization": `Bearer ${authToken}` },
+          body: fd
+        });
+
+        if (handleAuthError(res)) return;
+
+        if (res.ok) {
+          const data = await res.json();
+          alert(`Successfully ingested & extracted ${data.records.length} document(s).`);
+          clearAllFiles();
+          statusEl.innerText = "";
+          showTab("records-view");
+          loadDashboard();
+        } else {
+          const err = await res.json().catch(() => ({}));
+          alert(err.detail || "Upload failed.");
+          statusEl.innerText = "";
+        }
+      } catch (err) {
+        alert("Server unreachable.");
+        statusEl.innerText = "";
+      } finally {
+        uploadBtn.disabled = selectedFiles.length === 0;
+      }
+    }
+
+    function setupApp() {
+      document.getElementById("auth-panel").classList.add("hidden");
+      document.getElementById("app-shell").classList.remove("hidden");
+      document.getElementById("display-name").innerText = fullName || username;
+      document.getElementById("display-role").innerText = userRole;
+
+      if (userRole === "Admin") {
+        document.getElementById("nav-users").classList.remove("hidden");
+        document.getElementById("nav-audit").classList.remove("hidden");
+      }
+      loadDashboard();
+      loadRecords();
+    }
+
+    function logout() {
+      localStorage.clear();
+      window.location.reload();
+    }
+
+    function showTab(tabId, evt) {
+      document.querySelectorAll(".tab-panel").forEach(el => el.classList.add("hidden"));
+      document.querySelectorAll(".sidebar-item").forEach(el => el.classList.remove("active"));
+      const target = document.getElementById(tabId);
+      if (target) target.classList.remove("hidden");
+      if (evt && evt.currentTarget) evt.currentTarget.classList.add("active");
+
+      if (tabId === "records-view") loadRecords();
+      if (tabId === "dashboard-view") loadDashboard();
+      if (tabId === "users-view") loadUsers();
+      if (tabId === "audit-view") loadAudit();
+    }
+
+    async function loadDashboard() {
+      const res = await fetch("/api/dashboard/metrics", { headers: headers() });
+      if (handleAuthError(res)) return;
+      if (res.ok) {
+        const d = await res.json();
+        document.getElementById("m-total").innerText = d.total_documents;
+        document.getElementById("m-verified").innerText = d.verified_count;
+        document.getElementById("m-pending").innerText = d.pending_count;
+        document.getElementById("m-flagged").innerText = d.flagged_count;
+      }
+    }
+
+    async function loadRecords() {
+      const res = await fetch("/api/records", { headers: headers() });
+      if (handleAuthError(res)) return;
+      if (!res.ok) return;
+      currentRecords = await res.json();
+      const tbody = document.querySelector("#records-table tbody");
+      tbody.innerHTML = "";
+
+      currentRecords.forEach(r => {
+        const tr = document.createElement("tr");
+        const flagsCount = r.validation_flags ? r.validation_flags.length : 0;
+        const canReview = (userRole === "Admin" || userRole === "Revenue Officer");
+        const sClass = r.status.toLowerCase().replace(/ /g, '-');
+
+        tr.innerHTML = `
+          <td>${r.id}</td>
+          <td><b>${r.document_type || 'Deed'}</b></td>
+          <td><span class="badge-status status-${sClass}">${r.status}</span></td>
+          <td>${r.village || '-'}</td>
+          <td>${r.khasra_number || '-'}</td>
+          <td>${r.owner_name || '-'}</td>
+          <td>${r.total_area != null ? r.total_area : '-'}</td>
+          <td>${flagsCount > 0 ? `<span class="badge-flag">${flagsCount} Flag(s)</span>` : '0'}</td>
+          <td>${canReview ? `<button class="btn btn-sm" onclick='openReview(${r.id})'>Verify</button>` : '<small>Read-only</small>'}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+
+    function openReview(id) {
+      const rec = currentRecords.find(r => r.id === id);
+      if (!rec) return;
+      document.getElementById("edit-id").value = rec.id;
+      document.getElementById("edit-owner").value = rec.owner_name || "";
+      document.getElementById("edit-seller").value = rec.seller_name || "";
+      document.getElementById("edit-khasra").value = rec.khasra_number || "";
+      document.getElementById("edit-area").value = rec.total_area != null ? rec.total_area : "";
+      document.getElementById("edit-village").value = rec.village || "";
+      document.getElementById("edit-reg-date").value = rec.registration_date || "";
+      document.getElementById("edit-mut-date").value = rec.mutation_date || "";
+      document.getElementById("review-modal").classList.remove("hidden");
+    }
+
+    function closeModal() { document.getElementById("review-modal").classList.add("hidden"); }
+
+    async function saveRecord(status) {
+      const id = document.getElementById("edit-id").value;
+      const payload = {
+        owner_name: document.getElementById("edit-owner").value,
+        seller_name: document.getElementById("edit-seller").value,
+        buyer_name: document.getElementById("edit-owner").value,
+        khasra_number: document.getElementById("edit-khasra").value,
+        total_area: parseFloat(document.getElementById("edit-area").value) || null,
+        village: document.getElementById("edit-village").value,
+        registration_date: document.getElementById("edit-reg-date").value || null,
+        mutation_date: document.getElementById("edit-mut-date").value || null,
+        status: status
+      };
+
+      const res = await fetch(`/api/records/${id}`, { method: "PUT", headers: headers(), body: JSON.stringify(payload) });
+      if (handleAuthError(res)) return;
+      if (res.ok) {
+        alert("Record updated successfully.");
+        closeModal();
+        loadRecords();
+        loadDashboard();
+      }
+    }
+
+    async function loadUsers() {
+      const res = await fetch("/api/users", { headers: headers() });
+      if (handleAuthError(res)) return;
+      if (!res.ok) return;
+      const users = await res.json();
+      const tbody = document.querySelector("#users-table tbody");
+      tbody.innerHTML = "";
+      users.forEach(u => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td><b>${u.username}</b></td><td>${u.full_name}</td><td>${u.role}</td>
+          <td><button class="btn btn-sm" style="background:#ef4444;" onclick="deleteUser(${u.id})">Delete</button></td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+
+    async function deleteUser(id) {
+      if (!confirm("Delete user?")) return;
+      const res = await fetch(`/api/users/${id}`, { method: "DELETE", headers: headers() });
+      if (handleAuthError(res)) return;
+      loadUsers();
+    }
+
+    async function loadAudit() {
+      const res = await fetch("/api/audit-logs", { headers: headers() });
+      if (handleAuthError(res)) return;
+      if (!res.ok) return;
+      const logs = await res.json();
+      const tbody = document.querySelector("#audit-table tbody");
+      tbody.innerHTML = "";
+      logs.forEach(l => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `<td>${l.timestamp}</td><td>${l.user_id}</td><td>${l.role}</td><td>${l.action}</td><td>${l.details}</td>`;
+        tbody.appendChild(tr);
+      });
+    }
+  </script>
+</body>
+</html>
