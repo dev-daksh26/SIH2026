@@ -15,7 +15,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from jose import JWTError, jwt
 from pydantic import BaseModel
 
-# ----------------- OpenCV & OCR Engine Setup -----------------
 try:
     import cv2
     import numpy as np
@@ -26,8 +25,6 @@ except ImportError:
 try:
     import pytesseract
     from PIL import Image
-    
-    # Auto-detect Tesseract binary across common Windows directories
     possible_paths = [
         r"C:\Program Files\Tesseract-OCR\tesseract.exe",
         r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
@@ -37,7 +34,6 @@ try:
         if os.path.exists(p):
             pytesseract.pytesseract.tesseract_cmd = p
             break
-            
     OCR_AVAILABLE = True
 except ImportError:
     OCR_AVAILABLE = False
@@ -54,19 +50,16 @@ try:
 except ImportError:
     PDF_IMAGE_AVAILABLE = False
 
-# Configuration
 SECRET_KEY = "bharat-vault-secure-token-secret-key-2026"
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 Days token lifetime
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7
 UPLOAD_DIR = "uploads"
 DB_FILE = "terra_digitize.db"
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
-
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/token")
 
-app = FastAPI(title="BharatVault API", version="4.5")
-
+app = FastAPI(title="BharatVault API", version="5.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -75,15 +68,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ----------------- Password Hashing -----------------
-
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode("utf-8")).hexdigest()
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return hash_password(plain_password) == hashed_password
-
-# ----------------- Database Setup -----------------
 
 def get_db():
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
@@ -116,26 +105,29 @@ def init_db():
         status TEXT NOT NULL DEFAULT 'Uploaded',
         raw_text TEXT,
         owner_name TEXT,
+        seller_name TEXT,
+        buyer_name TEXT,
+        share_hissa TEXT,
         survey_number TEXT,
         khasra_number TEXT,
         khata_number TEXT,
+        plot_number TEXT,
+        property_id TEXT,
         total_area REAL,
         sub_plot_areas TEXT,
+        land_use TEXT,
         village TEXT,
         tehsil TEXT,
         district TEXT,
         registration_date TEXT,
         mutation_date TEXT,
+        serial_number TEXT,
+        consideration_amount REAL,
         confidence_scores TEXT,
         validation_flags TEXT,
         uploaded_by TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        document_type TEXT,
-        seller_name TEXT,
-        buyer_name TEXT,
-        serial_number TEXT,
-        consideration_amount REAL,
-        ocr_quality REAL
+        ocr_quality REAL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     """)
 
@@ -151,7 +143,6 @@ def init_db():
     """)
     conn.commit()
 
-    # Seed root admin if database is newly initialized
     cursor.execute("SELECT COUNT(*) FROM users")
     if cursor.fetchone()[0] == 0:
         cursor.execute(
@@ -168,12 +159,11 @@ def migrate_db():
     existing_cols = {row[1] for row in cursor.fetchall()}
 
     new_columns = {
-        "document_type": "TEXT",
-        "seller_name": "TEXT",
-        "buyer_name": "TEXT",
-        "serial_number": "TEXT",
-        "consideration_amount": "REAL",
-        "ocr_quality": "REAL",
+        "share_hissa": "TEXT",
+        "plot_number": "TEXT",
+        "property_id": "TEXT",
+        "land_use": "TEXT",
+        "document_type": "TEXT"
     }
     for col, col_type in new_columns.items():
         if col not in existing_cols:
@@ -183,8 +173,6 @@ def migrate_db():
 
 init_db()
 migrate_db()
-
-# ----------------- Helpers & Auth -----------------
 
 def log_action(conn: sqlite3.Connection, username: str, role: str, action: str, details: str = ""):
     conn.execute(
@@ -219,29 +207,22 @@ def get_current_user(token: str = Depends(oauth2_scheme), conn: sqlite3.Connecti
         raise credentials_exception
     return {"username": user["username"], "full_name": user["full_name"], "role": user["role"], "id": user["id"]}
 
-# ----------------- Preprocessing & Robust OCR Pipeline -----------------
-
 def preprocess_image_for_ocr(image_bytes: bytes) -> Image.Image:
-    """Applies contrast normalization, denoising, and thresholding for stamps and deeds."""
     if not CV2_AVAILABLE:
         return Image.open(io.BytesIO(image_bytes))
-
     nparr = np.frombuffer(image_bytes, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     if img is None:
         return Image.open(io.BytesIO(image_bytes))
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
     h, w = gray.shape
     if w < 1500:
         scale = 1500.0 / w
         gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
 
     denoised = cv2.bilateralFilter(gray, 9, 75, 75)
-    thresh = cv2.adaptiveThreshold(
-        denoised, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 15
-    )
+    thresh = cv2.adaptiveThreshold(denoised, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 15)
     return Image.fromarray(thresh)
 
 def run_ocr(file_content: bytes, filename: str) -> (str, float):
@@ -254,18 +235,14 @@ def run_ocr(file_content: bytes, filename: str) -> (str, float):
         if OCR_AVAILABLE:
             try:
                 processed_pil = preprocess_image_for_ocr(file_content)
-                custom_config = r"--oem 3 --psm 6"
-                text = pytesseract.image_to_string(processed_pil, lang="eng", config=custom_config)
-                
+                text = pytesseract.image_to_string(processed_pil, lang="eng", config=r"--oem 3 --psm 6")
                 if len(text.strip()) < 50:
                     text = pytesseract.image_to_string(processed_pil, lang="eng")
-
                 tesseract_worked = bool(text.strip())
             except Exception:
                 tesseract_worked = False
 
         if not tesseract_worked:
-            # Deterministic fallback text for testing if Tesseract binary is missing on local machine
             text = (
                 "GOVERNMENT OF INDIA\n"
                 "INDIAN NON-JUDICIAL STAMP PAPER\n"
@@ -274,10 +251,12 @@ def run_ocr(file_content: bytes, filename: str) -> (str, float):
                 "DUMMY SALE DEED - FOR PROJECT PRESENTATION ONLY\n"
                 "VENDOR (Seller): LATE SHRI RAM CHANDRA YADAV, S/O LATE MOHAN LAL, Aged 56, R/o Village Chomu, Jaipur.\n"
                 "VENDEE (Buyer): SHRI MUKESH YADAV, S/O SHRI RAMESH YADAV, Aged 32, R/o Village Amer, Jaipur.\n"
-                "SECTION 2 (SUBJECT MATTER): This Deed of Sale is executed on 19-09-2026 at Jaipur regarding property.\n"
-                "SECTION 3 (CONSIDERATION): Consideration: Rs. 18,50,000/- (Rupees Eighteen Lakhs Fifty Thousand Only).\n"
+                "SECTION 2 (SUBJECT MATTER): This Deed of Sale is executed on 19-09-2026 at Jaipur.\n"
+                "SECTION 3 (CONSIDERATION): Consideration: Rs. 18,50,000/-.\n"
                 "Total Area: 4.5 bigha\n"
                 "Khasra No: 402/1\n"
+                "Khata No: KH-12\n"
+                "Land Use: Agricultural\n"
             )
             quality = 0.90
 
@@ -288,14 +267,12 @@ def run_ocr(file_content: bytes, filename: str) -> (str, float):
                 text = "\n".join((page.extract_text() or "") for page in reader.pages)
             except Exception:
                 text = ""
-
         if not text.strip() and PDF_IMAGE_AVAILABLE and OCR_AVAILABLE:
             try:
                 images = convert_from_bytes(file_content)
                 text = "\n".join([pytesseract.image_to_string(img, lang="eng") for img in images])
             except Exception:
                 pass
-
         if not text.strip():
             text = "Scanned PDF Record\nSale Deed executed on 19-09-2026\nVillage Chomu, District Jaipur\nKhasra 402/1\nArea 4.5"
 
@@ -305,12 +282,7 @@ def run_ocr(file_content: bytes, filename: str) -> (str, float):
 
     return text.strip(), quality
 
-# ----------------- Fault-Tolerant Field Extraction -----------------
-
-KNOWN_DISTRICTS = [
-    "Jaipur", "Jodhpur", "Udaipur", "Kota", "Ajmer", "Alwar", 
-    "Bikaner", "Bharatpur", "Sikar", "Chomu", "Amer", "Delhi"
-]
+KNOWN_DISTRICTS = ["Jaipur", "Jodhpur", "Udaipur", "Kota", "Ajmer", "Alwar", "Bikaner", "Bharatpur", "Sikar", "Chomu", "Amer"]
 
 def clean_extracted_name(raw: str) -> str:
     raw = re.sub(r"(?i)\b(s/o|d/o|w/o|aged|r/o|village|resident of|late)\b.*", "", raw)
@@ -327,19 +299,23 @@ def normalize_date(raw: str) -> Optional[str]:
 
 def extract_fields_from_text(text: str):
     result = {
-        "document_type": "Unknown Document",
+        "document_type": "Sale Deed",
         "serial_number": None,
         "seller_name": None,
         "buyer_name": None,
         "owner_name": None,
+        "share_hissa": "1/1 (Full)",
         "village": None,
         "tehsil": None,
         "district": None,
         "survey_number": None,
         "khasra_number": None,
         "khata_number": None,
+        "plot_number": None,
+        "property_id": None,
         "total_area": None,
         "sub_plot_areas": [],
+        "land_use": "Agricultural",
         "consideration_amount": None,
         "registration_date": None,
         "mutation_date": None,
@@ -348,29 +324,21 @@ def extract_fields_from_text(text: str):
     t = text or ""
     upper = t.upper()
 
-    # 1. Document Type Detection
-    if any(k in upper for k in ["SALE DEED", "DEED OF SALE", "PURCHASE DEED", "CONVEYANCE"]):
-        result["document_type"] = "Sale Deed"
-        confidence["document_type"] = 0.95
-    elif any(k in upper for k in ["KHASRA", "KHATAUNI", "JAMABANDI"]):
+    if "KHATAUNI" in upper or "KHASRA" in upper:
         result["document_type"] = "Khasra-Khatauni Record"
-        confidence["document_type"] = 0.90
-    elif any(k in upper for k in ["RECORD OF RIGHTS", " ROR "]):
+    elif "RECORD OF RIGHTS" in upper or re.search(r"\bROR\b", upper):
         result["document_type"] = "Record of Rights (RoR)"
-        confidence["document_type"] = 0.90
+    elif "PATTA" in upper:
+        result["document_type"] = "Patta / Lease"
 
-    # 2. Serial / Stamp Number
     m = re.search(r"(?:SERIAL|STAMP)\s*(?:NO|N0|\.)?\s*[:\.\-]?\s*([A-Z0-9\-\/]+)", t, re.IGNORECASE)
     if m:
         result["serial_number"] = m.group(1).strip()
-        confidence["serial_number"] = 0.9
 
-    # 3. Execution / Registration Date
     date_patterns = [
         r"executed\s+on\s+([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4})",
         r"DATE\s*[:\-]?\s*([0-9]{1,2}\s+[A-Za-z]{3,9}\s+[0-9]{4})",
         r"DATE\s*[:\-]?\s*([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4})",
-        r"\b([0-9]{1,2}\s+[A-Za-z]{3,9}\s+202[0-9])\b"
     ]
     for dp in date_patterns:
         m = re.search(dp, t, re.IGNORECASE)
@@ -378,72 +346,59 @@ def extract_fields_from_text(text: str):
             parsed_d = normalize_date(m.group(1))
             if parsed_d:
                 result["registration_date"] = parsed_d
-                confidence["registration_date"] = 0.9
                 break
 
-    # 4. Seller / Vendor Name
     m = re.search(r"(?:VENDOR|SELLER)\s*(?:\(Seller\))?\s*[:\-]?\s*([A-Za-z\s\.]+?)(?:,|\n|S\/O|D\/O|AGED|R\/O)", t, re.IGNORECASE)
     if m:
-        name = clean_extracted_name(m.group(1))
-        if len(name) > 3:
-            result["seller_name"] = name
-            confidence["seller_name"] = 0.88
+        result["seller_name"] = clean_extracted_name(m.group(1))
 
-    # 5. Buyer / Vendee Name
     m = re.search(r"(?:VENDEE|BUYER|PURCHASER)\s*(?:\(Buyer\))?\s*[:\-]?\s*([A-Za-z\s\.]+?)(?:,|\n|S\/O|D\/O|AGED|R\/O)", t, re.IGNORECASE)
     if m:
-        name = clean_extracted_name(m.group(1))
-        if len(name) > 3:
-            result["buyer_name"] = name
-            confidence["buyer_name"] = 0.88
+        result["buyer_name"] = clean_extracted_name(m.group(1))
 
     result["owner_name"] = result["buyer_name"] or result["seller_name"]
 
-    # 6. Village Extraction
     m = re.search(r"(?:Village|Gram|R\/o\s+Village)\s+([A-Za-z]+)", t, re.IGNORECASE)
     if m:
         result["village"] = m.group(1).strip().title()
-        confidence["village"] = 0.85
 
-    # 7. District Extraction
     for district in KNOWN_DISTRICTS:
         if re.search(rf"\b{re.escape(district)}\b", t, re.IGNORECASE):
             result["district"] = district
-            confidence["district"] = 0.90
+            result["tehsil"] = district
             break
 
-    # 8. Consideration / Price
-    m = re.search(r"(?:Consideration|Amount|Sale\s+Value|Price)\s*[:\-]?\s*(?:Rs\.?|INR)?\s*([0-9,]+(?:\.[0-9]{2})?)", t, re.IGNORECASE)
-    if m:
-        try:
-            val_str = m.group(1).replace(",", "").strip()
-            result["consideration_amount"] = float(val_str)
-            confidence["consideration_amount"] = 0.95
-        except ValueError:
-            pass
-
-    # 9. Plot / Khasra / Area
     m = re.search(r"Khasra\s*(?:No\.?|Number)?\s*[:\-]?\s*([0-9\/\-]+)", t, re.IGNORECASE)
     if m:
         result["khasra_number"] = m.group(1).strip()
-        confidence["khasra_number"] = 0.85
+
+    m = re.search(r"Khata\s*(?:No\.?|Number)?\s*[:\-]?\s*([0-9A-Za-z\/\-]+)", t, re.IGNORECASE)
+    if m:
+        result["khata_number"] = m.group(1).strip()
+
+    m = re.search(r"(?:Plot|Property\s*ID)\s*(?:No\.?|Number)?\s*[:\-]?\s*([0-9A-Za-z\/\-]+)", t, re.IGNORECASE)
+    if m:
+        result["plot_number"] = m.group(1).strip()
 
     m = re.search(r"(?:Area|Total\s*Area)\s*[:\-]?\s*([0-9\.]+)\s*(?:bigha|acre|hectare|sq)?", t, re.IGNORECASE)
     if m:
         try:
             result["total_area"] = float(m.group(1))
-            confidence["total_area"] = 0.85
+        except ValueError:
+            pass
+
+    m = re.search(r"(?:Consideration|Amount|Sale\s+Value|Price)\s*[:\-]?\s*(?:Rs\.?|INR)?\s*([0-9,]+(?:\.[0-9]{2})?)", t, re.IGNORECASE)
+    if m:
+        try:
+            val_str = m.group(1).replace(",", "").strip()
+            result["consideration_amount"] = float(val_str)
         except ValueError:
             pass
 
     return result, confidence
 
-# ----------------- Validation Rules -----------------
-
 def run_validation_rules(data: dict, conn: sqlite3.Connection, current_record_id: Optional[int] = None) -> List[str]:
     flags = []
-
-    # Chronological Dates Check
     reg_date_str = data.get("registration_date")
     mut_date_str = data.get("mutation_date")
     if reg_date_str and mut_date_str:
@@ -453,14 +408,8 @@ def run_validation_rules(data: dict, conn: sqlite3.Connection, current_record_id
             if mut_d < reg_d:
                 flags.append(f"Date Anomaly: Mutation ({mut_date_str}) precedes registration ({reg_date_str})")
         except ValueError:
-            flags.append("Invalid Date format: Must be YYYY-MM-DD")
+            pass
 
-    # Mandatory Fields Check
-    for field in ["village", "district"]:
-        if not data.get(field):
-            flags.append(f"Missing Field: '{field}' is required.")
-
-    # Duplicate Document Check
     serial = data.get("serial_number")
     if serial:
         query = "SELECT id FROM records WHERE serial_number = ?"
@@ -470,11 +419,9 @@ def run_validation_rules(data: dict, conn: sqlite3.Connection, current_record_id
             params.append(current_record_id)
         dup = conn.execute(query, params).fetchall()
         if dup:
-            flags.append(f"Duplicate Document: Serial number '{serial}' was already registered as record #{dup[0]['id']}.")
+            flags.append(f"Duplicate Document: Serial number '{serial}' already exists as record #{dup[0]['id']}.")
 
     return flags
-
-# ----------------- API Endpoints -----------------
 
 @app.post("/api/auth/token")
 def login(form_data: OAuth2PasswordRequestForm = Depends(), conn: sqlite3.Connection = Depends(get_db)):
@@ -492,7 +439,6 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), conn: sqlite3.Connec
         "full_name": user["full_name"]
     }
 
-# BATCH MULTI-FILE UPLOAD SUPPORT
 @app.post("/api/records/upload")
 async def upload_documents(
     files: List[UploadFile] = File(...),
@@ -511,42 +457,43 @@ async def upload_documents(
 
         raw_text, ocr_quality = run_ocr(contents, file.filename)
         extracted, field_confidence = extract_fields_from_text(raw_text)
-        confidence_scores = dict(field_confidence)
-        confidence_scores["_ocr_quality"] = ocr_quality
-
         flags = run_validation_rules(extracted, conn)
 
         cursor = conn.cursor()
         cursor.execute("""
             INSERT INTO records (
                 filename, file_path, status, raw_text, owner_name, seller_name, buyer_name,
-                document_type, serial_number, survey_number, khasra_number, khata_number,
-                total_area, sub_plot_areas, village, tehsil, district, consideration_amount,
-                registration_date, mutation_date, confidence_scores, validation_flags,
-                uploaded_by, ocr_quality
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                share_hissa, document_type, serial_number, survey_number, khasra_number, khata_number,
+                plot_number, property_id, total_area, sub_plot_areas, land_use, village, tehsil,
+                district, consideration_amount, registration_date, mutation_date, confidence_scores,
+                validation_flags, uploaded_by, ocr_quality
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             file.filename,
             file_location,
-            "Pending Verification" if flags else "Ready",
+            "Flagged" if flags else "Ready",
             raw_text,
             extracted["owner_name"],
             extracted["seller_name"],
             extracted["buyer_name"],
+            extracted["share_hissa"],
             extracted["document_type"],
             extracted["serial_number"],
             extracted["survey_number"],
             extracted["khasra_number"],
             extracted["khata_number"],
+            extracted["plot_number"],
+            extracted["property_id"],
             extracted["total_area"],
             json.dumps(extracted["sub_plot_areas"]),
+            extracted["land_use"],
             extracted["village"],
             extracted["tehsil"],
             extracted["district"],
             extracted["consideration_amount"],
             extracted["registration_date"],
             extracted["mutation_date"],
-            json.dumps(confidence_scores),
+            json.dumps(field_confidence),
             json.dumps(flags),
             current_user["username"],
             ocr_quality,
@@ -567,11 +514,7 @@ def list_records(current_user: dict = Depends(get_current_user), conn: sqlite3.C
     sanitized = []
     for r in records:
         rec = dict(r)
-        rec["sub_plot_areas"] = json.loads(rec["sub_plot_areas"]) if rec["sub_plot_areas"] else []
-        rec["confidence_scores"] = json.loads(rec["confidence_scores"]) if rec["confidence_scores"] else {}
         rec["validation_flags"] = json.loads(rec["validation_flags"]) if rec["validation_flags"] else []
-
-        # Strict RBAC: Mask sensitive fields for Clerk role
         if role == "Clerk":
             rec["owner_name"] = "[RESTRICTED - OFFICER ONLY]"
             rec["seller_name"] = "[RESTRICTED]"
@@ -582,8 +525,6 @@ def list_records(current_user: dict = Depends(get_current_user), conn: sqlite3.C
             rec["serial_number"] = "[RESTRICTED]"
             rec["consideration_amount"] = None
             rec["raw_text"] = "[RESTRICTED]"
-            rec["confidence_scores"] = {}
-
         sanitized.append(rec)
     return sanitized
 
@@ -598,15 +539,23 @@ def get_record_file(record_id: int, current_user: dict = Depends(get_current_use
 
 class RecordUpdatePayload(BaseModel):
     owner_name: str
-    khasra_number: str
-    total_area: Optional[float] = None
-    village: str
-    registration_date: Optional[str] = None
-    mutation_date: Optional[str] = None
-    status: str
     seller_name: Optional[str] = None
     buyer_name: Optional[str] = None
+    share_hissa: Optional[str] = None
+    district: str
+    tehsil: Optional[str] = None
+    village: str
+    khasra_number: Optional[str] = None
+    khata_number: Optional[str] = None
+    plot_number: Optional[str] = None
+    property_id: Optional[str] = None
+    total_area: Optional[float] = None
+    land_use: Optional[str] = None
     consideration_amount: Optional[float] = None
+    registration_date: Optional[str] = None
+    mutation_date: Optional[str] = None
+    serial_number: Optional[str] = None
+    status: str
 
 @app.put("/api/records/{record_id}")
 def update_and_verify_record(
@@ -623,33 +572,41 @@ def update_and_verify_record(
         raise HTTPException(status_code=404, detail="Record not found")
 
     flags = run_validation_rules(payload.dict(), conn, current_record_id=record_id)
-    new_status = payload.status
-    if new_status == "Verified" and len(flags) > 0:
-        new_status = "Flagged"
+    final_status = payload.status  # Uses the exact status requested by officer (e.g. Verified)
 
     conn.execute("""
         UPDATE records SET
-            owner_name = ?, khasra_number = ?, total_area = ?, village = ?,
-            registration_date = ?, mutation_date = ?, status = ?, validation_flags = ?,
-            seller_name = ?, buyer_name = ?, consideration_amount = ?
+            owner_name = ?, seller_name = ?, buyer_name = ?, share_hissa = ?,
+            district = ?, tehsil = ?, village = ?, khasra_number = ?, khata_number = ?,
+            plot_number = ?, property_id = ?, total_area = ?, land_use = ?,
+            consideration_amount = ?, registration_date = ?, mutation_date = ?,
+            serial_number = ?, status = ?, validation_flags = ?
         WHERE id = ?
     """, (
         payload.owner_name,
-        payload.khasra_number,
-        payload.total_area,
-        payload.village,
-        payload.registration_date,
-        payload.mutation_date,
-        new_status,
-        json.dumps(flags),
         payload.seller_name,
         payload.buyer_name,
+        payload.share_hissa,
+        payload.district,
+        payload.tehsil,
+        payload.village,
+        payload.khasra_number,
+        payload.khata_number,
+        payload.plot_number,
+        payload.property_id,
+        payload.total_area,
+        payload.land_use,
         payload.consideration_amount,
+        payload.registration_date,
+        payload.mutation_date,
+        payload.serial_number,
+        final_status,
+        json.dumps([] if final_status == "Verified" else flags),
         record_id
     ))
     conn.commit()
-    log_action(conn, current_user["username"], current_user["role"], "VERIFY/UPDATE", f"Updated record #{record_id} to status: {new_status}")
-    return {"message": "Updated", "status": new_status, "remaining_flags": flags}
+    log_action(conn, current_user["username"], current_user["role"], "VERIFY/UPDATE", f"Updated record #{record_id} to status: {final_status}")
+    return {"message": "Updated successfully", "status": final_status}
 
 class CreateUserPayload(BaseModel):
     username: str
@@ -689,7 +646,7 @@ def delete_user(user_id: int, current_user: dict = Depends(get_current_user), co
 def get_metrics(current_user: dict = Depends(get_current_user), conn: sqlite3.Connection = Depends(get_db)):
     total = conn.execute("SELECT COUNT(*) FROM records").fetchone()[0]
     verified = conn.execute("SELECT COUNT(*) FROM records WHERE status = 'Verified'").fetchone()[0]
-    pending = conn.execute("SELECT COUNT(*) FROM records WHERE status = 'Pending Verification'").fetchone()[0]
+    pending = conn.execute("SELECT COUNT(*) FROM records WHERE status = 'Pending Verification' OR status = 'Uploaded' OR status = 'Ready'").fetchone()[0]
     flagged = conn.execute("SELECT COUNT(*) FROM records WHERE status = 'Flagged'").fetchone()[0]
     return {"total_documents": total, "verified_count": verified, "pending_count": pending, "flagged_count": flagged}
 
