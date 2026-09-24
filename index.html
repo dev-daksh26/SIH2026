@@ -2,201 +2,675 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>BharatVault | Intelligent Land Record & Validation System</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8F%9B%EF%B8%8F%3C/text%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     :root {
-      --primary: #1e3a8a;
-      --primary-hover: #172554;
-      --accent: #2563eb;
-      --sidebar-bg: #0f172a;
+      --primary: #4f46e5;
+      --primary-hover: #4338ca;
+      --primary-light: #eef2ff;
+      --accent: #06b6d4;
+      --accent2: #a855f7;
+      --gold: #f59e0b;
+      --sidebar-bg: #0a0e1a;
       --sidebar-text: #94a3b8;
-      --bg: #f8fafc;
+      --bg: #f1f4fa;
       --card-bg: #ffffff;
       --text: #0f172a;
-      --border: #e2e8f0;
-      --success: #16a34a;
-      --warning: #d97706;
-      --danger: #dc2626;
+      --border: #e6eaf2;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --shadow-sm: 0 1px 3px rgba(15,23,42,0.06), 0 1px 2px rgba(15,23,42,0.04);
+      --shadow-md: 0 10px 28px rgba(15,23,42,0.09);
+      --shadow-lg: 0 24px 55px rgba(15,23,42,0.20);
+      --shadow-glow: 0 8px 24px rgba(79,70,229,0.35);
+      --radius: 16px;
     }
 
     * { box-sizing: border-box; }
-    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); height: 100vh; overflow: hidden; }
+    body {
+      margin: 0;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      height: 100vh;
+      overflow: hidden;
+      -webkit-font-smoothing: antialiased;
+    }
+    h1, h2, h3, h4, .brand-font { font-family: 'Manrope', 'Inter', sans-serif; }
     .hidden { display: none !important; }
+    ::-webkit-scrollbar { width: 9px; height: 9px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 8px; }
+    ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
 
-    /* Auth View */
-    .auth-container { display: flex; justify-content: center; align-items: center; height: 100vh; background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); }
-    .auth-card { background: white; padding: 2.5rem; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.2); width: 100%; max-width: 400px; }
-    .auth-card h2 { margin-top: 0; color: var(--primary); text-align: center; }
-    .auth-card p { color: #64748b; font-size: 0.9rem; text-align: center; margin-bottom: 2rem; }
-    .form-group { margin-bottom: 1rem; }
-    .form-group label { display: block; font-weight: 600; font-size: 0.82rem; margin-bottom: 0.35rem; color: #475569; }
-    .form-group input, .form-group select, .form-group textarea { width: 100%; padding: 0.55rem; border: 1px solid var(--border); border-radius: 6px; font-size: 0.9rem; }
+    @keyframes fadeInUp { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes popIn { from { opacity: 0; transform: scale(0.94) translateY(8px); } to { opacity: 1; transform: scale(1) translateY(0); } }
+    @keyframes floatBlob { 0%, 100% { transform: translate(0,0) scale(1); } 33% { transform: translate(30px,-30px) scale(1.08); } 66% { transform: translate(-20px,20px) scale(0.95); } }
+    @keyframes shimmer { 0% { background-position: -400px 0; } 100% { background-position: 400px 0; } }
+    @keyframes pulseDot { 0%, 100% { box-shadow: 0 0 0 0 rgba(239,68,68,0.5); } 70% { box-shadow: 0 0 0 6px rgba(239,68,68,0); } }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes slideInRight { from { opacity: 0; transform: translateX(30px); } to { opacity: 1; transform: translateX(0); } }
+    @keyframes slideOutRight { to { opacity: 0; transform: translateX(30px); } }
+    @keyframes shine { 0% { transform: translateX(-120%) rotate(8deg); } 100% { transform: translateX(220%) rotate(8deg); } }
+    @keyframes ringPop { from { stroke-dashoffset: 660; } }
+    @keyframes gradientShift { 0%,100% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } }
+    @keyframes bounceIn { 0% { opacity:0; transform: scale(0.8);} 60% { opacity:1; transform: scale(1.04);} 100% { transform: scale(1);} }
 
-    /* Layout Shell */
+    /* ---------------- Auth / Login ---------------- */
+    .auth-container {
+      position: relative;
+      display: grid; grid-template-columns: 1.15fr 1fr;
+      height: 100vh; overflow: hidden;
+      background: #05070f;
+    }
+    .auth-visual {
+      position: relative; overflow: hidden;
+      background: radial-gradient(circle at 20% 20%, #1e1b4b 0%, #0b1120 55%, #05070f 100%);
+      display: flex; flex-direction: column; justify-content: center;
+      padding: 4rem 4.5rem; color: white;
+    }
+    .auth-blob { position: absolute; border-radius: 50%; filter: blur(80px); opacity: 0.55; animation: floatBlob 14s ease-in-out infinite; }
+    .auth-blob.b1 { width: 460px; height: 460px; background: #6366f1; top: -120px; left: -120px; }
+    .auth-blob.b2 { width: 380px; height: 380px; background: #06b6d4; bottom: -130px; right: -60px; animation-delay: -5s; }
+    .auth-blob.b3 { width: 320px; height: 320px; background: #a855f7; bottom: 8%; left: 30%; animation-delay: -9s; }
+    .auth-visual-content { position: relative; z-index: 2; max-width: 440px; }
+    .auth-visual .tag {
+      display: inline-flex; align-items: center; gap: 0.4rem; background: rgba(255,255,255,0.08);
+      border: 1px solid rgba(255,255,255,0.15); padding: 0.35rem 0.85rem; border-radius: 30px;
+      font-size: 0.74rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: #a5b4fc;
+      margin-bottom: 1.4rem; backdrop-filter: blur(6px);
+    }
+    .auth-visual h1 { font-size: 2.5rem; font-weight: 800; line-height: 1.15; margin: 0 0 0.9rem; letter-spacing: -1px; }
+    .auth-visual h1 span { background: linear-gradient(135deg, #818cf8, #67e8f9); -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .auth-visual p.lead { color: #94a3b8; font-size: 0.98rem; line-height: 1.6; margin-bottom: 2.2rem; }
+    .auth-feature-list { display: flex; flex-direction: column; gap: 0.9rem; }
+    .auth-feature { display: flex; align-items: center; gap: 0.8rem; font-size: 0.88rem; color: #cbd5e1; }
+    .auth-feature .ic {
+      width: 34px; height: 34px; border-radius: 10px; flex-shrink: 0;
+      background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.1);
+      display: flex; align-items: center; justify-content: center; font-size: 1rem;
+    }
+    .auth-stats { display: flex; gap: 2.2rem; margin-top: 2.6rem; }
+    .auth-stats div b { display: block; font-size: 1.5rem; font-weight: 800; color: white; }
+    .auth-stats div span { font-size: 0.72rem; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; }
+
+    .auth-form-side { display: flex; justify-content: center; align-items: center; background: #f8fafc; position: relative; }
+    .auth-card {
+      position: relative; z-index: 2;
+      background: white;
+      padding: 2.75rem; border-radius: 20px;
+      box-shadow: var(--shadow-lg);
+      width: 100%; max-width: 390px;
+      animation: popIn 0.5s cubic-bezier(.2,.9,.3,1.3);
+      border: 1px solid var(--border);
+    }
+    .auth-logo {
+      width: 54px; height: 54px; border-radius: 15px; margin: 0 auto 1rem;
+      background: linear-gradient(135deg, var(--primary), var(--accent2));
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1.5rem; box-shadow: 0 10px 24px rgba(79,70,229,0.35);
+    }
+    .auth-card h2 {
+      margin: 0 0 0.15rem; text-align: center; font-size: 1.65rem; font-weight: 800;
+      background: linear-gradient(135deg, var(--primary), var(--accent2));
+      -webkit-background-clip: text; background-clip: text; color: transparent;
+      letter-spacing: -0.5px;
+    }
+    .auth-card p.sub { color: #64748b; font-size: 0.86rem; text-align: center; margin-bottom: 1.8rem; }
+    .form-group { margin-bottom: 1.1rem; }
+    .form-group label { display: block; font-weight: 600; font-size: 0.76rem; margin-bottom: 0.35rem; color: #475569; text-transform: uppercase; letter-spacing: 0.03em; }
+    .form-group input, .form-group select {
+      width: 100%; padding: 0.72rem 0.85rem; border: 1.5px solid var(--border); border-radius: 10px;
+      font-size: 0.92rem; font-family: inherit; transition: all 0.2s ease; background: #fbfcfe;
+    }
+    .form-group input:focus, .form-group select:focus {
+      outline: none; border-color: var(--primary); background: white;
+      box-shadow: 0 0 0 4px rgba(79,70,229,0.12);
+    }
+    .auth-footnote { text-align: center; margin-top: 1.4rem; font-size: 0.76rem; color: #94a3b8; }
+
+    @media (max-width: 900px) {
+      .auth-container { grid-template-columns: 1fr; }
+      .auth-visual { display: none; }
+    }
+
+    /* ---------------- Shell ---------------- */
     .app-shell { display: flex; height: 100vh; }
-    aside.sidebar { width: 250px; background: var(--sidebar-bg); color: var(--sidebar-text); display: flex; flex-direction: column; flex-shrink: 0; }
-    .sidebar-brand { padding: 1.5rem 1.2rem; border-bottom: 1px solid #1e293b; }
-    .sidebar-brand h1 { margin: 0; font-size: 1.25rem; color: white; }
-    .sidebar-brand span { font-size: 0.75rem; color: #38bdf8; text-transform: uppercase; font-weight: 700; }
-    .sidebar-menu { list-style: none; padding: 1rem 0; margin: 0; flex: 1; }
-    .sidebar-item { padding: 0.75rem 1.25rem; display: flex; align-items: center; gap: 0.75rem; cursor: pointer; color: var(--sidebar-text); font-weight: 500; }
-    .sidebar-item:hover { background: #1e293b; color: white; }
-    .sidebar-item.active { background: var(--primary); color: white; font-weight: 600; }
-    .sidebar-footer { padding: 1rem 1.2rem; border-top: 1px solid #1e293b; display: flex; justify-content: space-between; align-items: center; }
-    .user-info .name { color: white; font-size: 0.85rem; font-weight: 600; }
-    .user-info .role { font-size: 0.75rem; color: #38bdf8; }
+    aside.sidebar {
+      width: 258px; background: var(--sidebar-bg); color: var(--sidebar-text);
+      display: flex; flex-direction: column; flex-shrink: 0;
+      background-image: radial-gradient(circle at 0% 0%, rgba(79,70,229,0.28), transparent 42%), radial-gradient(circle at 100% 100%, rgba(6,182,212,0.12), transparent 40%);
+      border-right: 1px solid rgba(255,255,255,0.06);
+    }
+    .sidebar-brand { padding: 1.6rem 1.3rem; border-bottom: 1px solid rgba(255,255,255,0.08); display: flex; align-items: center; gap: 0.7rem; }
+    .sidebar-brand .mark {
+      width: 36px; height: 36px; border-radius: 11px; flex-shrink: 0;
+      background: linear-gradient(135deg, var(--primary), var(--accent));
+      display: flex; align-items: center; justify-content: center; font-size: 1.05rem;
+      box-shadow: 0 0 18px rgba(99,102,241,0.55);
+    }
+    .sidebar-brand h1 { margin: 0; font-size: 1.18rem; color: white; letter-spacing: -0.3px; }
+    .sidebar-brand span { font-size: 0.66rem; color: #38bdf8; text-transform: uppercase; font-weight: 700; letter-spacing: 0.07em; }
 
-    main.content-area { flex: 1; padding: 2rem; overflow-y: auto; }
-    .card { background: white; border-radius: 8px; padding: 1.5rem; border: 1px solid var(--border); margin-bottom: 1.5rem; }
-    .metrics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1.2rem; margin-bottom: 2rem; }
-    .metric-card { background: white; border: 1px solid var(--border); border-radius: 8px; padding: 1.2rem; text-align: center; }
-    .metric-card .num { font-size: 2.2rem; font-weight: 700; color: var(--primary); }
-    .metric-card .label { color: #64748b; font-size: 0.85rem; font-weight: 600; }
+    .sidebar-section-label { padding: 0.9rem 1.2rem 0.35rem; font-size: 0.66rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.09em; color: #475569; }
+    .sidebar-menu { list-style: none; padding: 0.2rem 0.6rem; margin: 0; }
+    .sidebar-item {
+      padding: 0.7rem 0.9rem; margin-bottom: 0.2rem; border-radius: 11px;
+      display: flex; align-items: center; gap: 0.75rem; cursor: pointer;
+      color: var(--sidebar-text); font-weight: 500; font-size: 0.89rem;
+      transition: all 0.18s ease; position: relative;
+    }
+    .sidebar-item .ic { font-size: 1rem; width: 20px; text-align: center; }
+    .sidebar-item:hover { background: rgba(255,255,255,0.06); color: white; transform: translateX(3px); }
+    .sidebar-item.active {
+      background: linear-gradient(135deg, var(--primary), #4f46e5cc);
+      color: white; font-weight: 600; box-shadow: 0 4px 16px rgba(79,70,229,0.45);
+    }
+    .sidebar-spacer { flex: 1; }
 
-    .file-drop-area { border: 2px dashed #94a3b8; border-radius: 8px; padding: 2rem; text-align: center; background: #f8fafc; cursor: pointer; }
+    .sidebar-help {
+      margin: 0.8rem; padding: 1rem; border-radius: 13px;
+      background: linear-gradient(160deg, rgba(99,102,241,0.16), rgba(6,182,212,0.08));
+      border: 1px solid rgba(255,255,255,0.08); font-size: 0.78rem; color: #cbd5e1;
+    }
+    .sidebar-help b { color: white; display: block; margin-bottom: 0.25rem; font-size: 0.82rem; }
+
+    .sidebar-footer {
+      padding: 1rem 1.2rem; border-top: 1px solid rgba(255,255,255,0.08);
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .user-info { display: flex; align-items: center; gap: 0.6rem; }
+    .avatar {
+      width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0;
+      background: linear-gradient(135deg, var(--accent2), var(--primary));
+      display: flex; align-items: center; justify-content: center;
+      color: white; font-weight: 700; font-size: 0.88rem;
+      box-shadow: 0 0 0 3px rgba(255,255,255,0.06);
+    }
+    .user-info .name { color: white; font-size: 0.85rem; font-weight: 600; line-height: 1.2; }
+    .user-info .role { font-size: 0.72rem; color: #38bdf8; }
+    .btn-logout {
+      background: transparent; border: 1px solid #334155; color: #94a3b8; cursor: pointer;
+      border-radius: 8px; padding: 0.42rem 0.7rem; font-size: 0.8rem; transition: all 0.2s ease;
+    }
+    .btn-logout:hover { background: var(--danger); color: white; border-color: var(--danger); transform: translateY(-1px); }
+
+    /* ---------------- Top bar ---------------- */
+    .topbar {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0.9rem 2.2rem; background: rgba(255,255,255,0.75); backdrop-filter: blur(10px);
+      border-bottom: 1px solid var(--border); flex-shrink: 0;
+    }
+    .topbar-greeting { font-size: 0.92rem; color: #334155; font-weight: 600; }
+    .topbar-greeting .wave { display: inline-block; animation: bounceIn 0.6s ease; }
+    .topbar-sub { font-size: 0.74rem; color: #94a3b8; margin-top: 0.1rem; }
+    .topbar-right { display: flex; align-items: center; gap: 0.9rem; }
+    .live-clock {
+      font-size: 0.78rem; font-weight: 700; color: var(--primary); background: var(--primary-light);
+      padding: 0.4rem 0.8rem; border-radius: 20px; font-variant-numeric: tabular-nums;
+      display: flex; align-items: center; gap: 0.4rem;
+    }
+    .live-clock .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--success); animation: pulseDot 1.8s infinite; }
+    .status-pill {
+      font-size: 0.72rem; font-weight: 700; padding: 0.38rem 0.75rem; border-radius: 20px;
+      background: #ecfdf5; color: #059669; border: 1px solid #a7f3d0;
+    }
+
+    /* ---------------- Content Area ---------------- */
+    .app-main-col { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+    main.content-area { flex: 1; padding: 1.9rem 2.2rem 2.4rem; overflow-y: auto; animation: fadeIn 0.4s ease; }
+    .tab-panel { animation: fadeInUp 0.35s ease; }
+    .panel-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.6rem; }
+    .panel-header h2 { margin: 0; color: var(--text); font-size: 1.55rem; font-weight: 800; letter-spacing: -0.4px; }
+    .panel-header .desc { font-size: 0.83rem; color: #64748b; margin-top: 0.2rem; }
+    h2 { font-weight: 800; letter-spacing: -0.4px; }
+    h3 { font-size: 1rem; color: #334155; font-weight: 700; display: flex; align-items: center; gap: 0.4rem; }
+
+    .card {
+      background: var(--card-bg); border-radius: var(--radius); padding: 1.6rem;
+      border: 1px solid var(--border); box-shadow: var(--shadow-sm);
+      margin-bottom: 1.5rem; transition: box-shadow 0.25s ease;
+    }
+    .card:hover { box-shadow: var(--shadow-md); }
+
+    /* ---------------- Hero banner ---------------- */
+    .hero-banner {
+      position: relative; overflow: hidden; border-radius: 20px; padding: 1.9rem 2.2rem;
+      margin-bottom: 1.7rem; color: white;
+      background: linear-gradient(120deg, #4338ca, #4f46e5 35%, #7c3aed 65%, #06b6d4);
+      background-size: 220% 220%; animation: gradientShift 12s ease infinite;
+      box-shadow: 0 20px 45px rgba(79,70,229,0.28);
+      display: flex; align-items: center; justify-content: space-between; gap: 1.5rem; flex-wrap: wrap;
+    }
+    .hero-banner::after {
+      content: ""; position: absolute; top: -50%; left: -20%; width: 60%; height: 220%;
+      background: rgba(255,255,255,0.08); transform: rotate(12deg); animation: shine 7s ease-in-out infinite;
+    }
+    .hero-banner h2 { margin: 0 0 0.35rem; font-size: 1.45rem; font-weight: 800; position: relative; z-index: 1; }
+    .hero-banner p { margin: 0; font-size: 0.86rem; color: rgba(255,255,255,0.85); max-width: 480px; position: relative; z-index: 1; }
+    .hero-banner .hero-badge {
+      position: relative; z-index: 1; background: rgba(255,255,255,0.16); border: 1px solid rgba(255,255,255,0.25);
+      padding: 0.85rem 1.2rem; border-radius: 14px; backdrop-filter: blur(6px); text-align: center; min-width: 130px;
+    }
+    .hero-banner .hero-badge .n { font-size: 1.5rem; font-weight: 800; }
+    .hero-banner .hero-badge .l { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.85; }
+
+    .metrics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1.2rem; margin-bottom: 1.7rem; }
+    .metric-card {
+      position: relative; overflow: hidden;
+      background: white; border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 1.35rem 1.4rem; box-shadow: var(--shadow-sm);
+      transition: transform 0.22s ease, box-shadow 0.22s ease;
+      display: flex; align-items: center; gap: 1rem;
+    }
+    .metric-card::before {
+      content: ""; position: absolute; top: 0; left: 0; right: 0; height: 3px;
+      background: linear-gradient(90deg, var(--primary), var(--accent));
+    }
+    .metric-card:hover { transform: translateY(-4px); box-shadow: var(--shadow-md); }
+    .metric-card .icon-bubble {
+      width: 46px; height: 46px; border-radius: 13px; flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center; font-size: 1.3rem;
+    }
+    .metric-card .num { font-size: 2.1rem; font-weight: 800; color: var(--text); letter-spacing: -1px; line-height: 1; }
+    .metric-card .label { color: #64748b; font-size: 0.78rem; font-weight: 600; margin-top: 0.25rem; }
+    .metric-card.mc-total .icon-bubble { background: var(--primary-light); color: var(--primary); }
+    .metric-card.mc-flagged .icon-bubble { background: #fee2e2; color: var(--danger); }
+    .metric-card.mc-pending .icon-bubble { background: #dbeafe; color: #2563eb; }
+    .metric-card.mc-verified .icon-bubble { background: #d1fae5; color: var(--success); }
+
+    /* ---------------- Dashboard insight row: chart + activity ---------------- */
+    .insight-row { display: grid; grid-template-columns: 1fr 1.35fr; gap: 1.3rem; margin-bottom: 1.8rem; }
+    .chart-card { display: flex; align-items: center; gap: 1.4rem; }
+    .donut-wrap { position: relative; flex-shrink: 0; width: 148px; height: 148px; }
+    .donut-wrap svg { transform: rotate(-90deg); }
+    .donut-center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+    .donut-center .n { font-size: 1.5rem; font-weight: 800; color: var(--text); }
+    .donut-center .l { font-size: 0.65rem; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.04em; }
+    .legend { display: flex; flex-direction: column; gap: 0.7rem; }
+    .legend-item { display: flex; align-items: center; gap: 0.55rem; font-size: 0.83rem; color: #475569; }
+    .legend-item .sw { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
+    .legend-item b { color: var(--text); margin-left: auto; font-weight: 700; }
+
+    .tips-card ul { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 0.85rem; }
+    .tips-card li { display: flex; gap: 0.7rem; align-items: flex-start; font-size: 0.85rem; color: #475569; line-height: 1.45; }
+    .tips-card li .bullet {
+      width: 26px; height: 26px; border-radius: 8px; flex-shrink: 0; display: flex; align-items: center;
+      justify-content: center; font-size: 0.85rem; background: var(--primary-light); color: var(--primary); margin-top: 0.05rem;
+    }
+
+    /* ---------------- Upload / Drop Area ---------------- */
+    .file-drop-area {
+      border: 2.5px dashed #c7d2fe; border-radius: var(--radius); padding: 2.6rem 1.5rem;
+      text-align: center; background: linear-gradient(180deg, #fafbff, #f5f6ff);
+      cursor: pointer; transition: all 0.22s ease; position: relative;
+    }
+    .file-drop-area:hover, .file-drop-area.drag-over {
+      border-color: var(--primary); background: var(--primary-light);
+      transform: scale(1.01);
+    }
+    .file-drop-area .drop-icon {
+      width: 56px; height: 56px; border-radius: 16px; margin: 0 auto 0.7rem;
+      background: linear-gradient(135deg, var(--primary), var(--accent2));
+      display: flex; align-items: center; justify-content: center; font-size: 1.6rem;
+      box-shadow: 0 10px 22px rgba(79,70,229,0.3);
+    }
+    .format-chips { display: flex; gap: 0.4rem; justify-content: center; margin-top: 0.8rem; flex-wrap: wrap; }
+    .format-chip { background: white; border: 1px solid var(--border); padding: 0.22rem 0.6rem; border-radius: 7px; font-size: 0.7rem; font-weight: 700; color: #64748b; }
     .file-list { margin-top: 1rem; list-style: none; padding: 0; }
-    .file-item { display: flex; justify-content: space-between; align-items: center; padding: 0.5rem 0.8rem; background: #f1f5f9; border-radius: 6px; margin-bottom: 0.5rem; font-size: 0.9rem; }
-    .btn-remove-file { background: transparent; border: none; color: #ef4444; font-weight: bold; cursor: pointer; font-size: 1.1rem; }
+    .file-item {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 0.65rem 0.95rem; background: #f1f5f9; border-radius: 10px;
+      margin-bottom: 0.5rem; font-size: 0.88rem; animation: fadeInUp 0.25s ease;
+      border: 1px solid transparent;
+    }
+    .file-item:hover { border-color: var(--border); }
+    .btn-remove-file { background: transparent; border: none; color: var(--danger); font-weight: bold; cursor: pointer; font-size: 1.1rem; transition: transform 0.15s ease; }
+    .btn-remove-file:hover { transform: scale(1.25); }
 
-    /* Search & Table Toolbar */
-    .table-toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; gap: 1rem; }
-    .search-input { width: 340px; padding: 0.65rem 1rem; border: 1px solid var(--border); border-radius: 6px; font-size: 0.9rem; outline: none; }
+    .upload-side-note {
+      background: linear-gradient(160deg, #0b1120, #1e1b4b); color: #cbd5e1; border-radius: var(--radius);
+      padding: 1.5rem; font-size: 0.83rem; line-height: 1.6;
+    }
+    .upload-side-note h4 { color: white; margin: 0 0 0.6rem; font-size: 0.95rem; }
+    .upload-side-note .step { display: flex; gap: 0.65rem; margin-bottom: 0.8rem; }
+    .upload-side-note .step .num {
+      width: 22px; height: 22px; border-radius: 50%; background: rgba(255,255,255,0.12);
+      display: flex; align-items: center; justify-content: center; font-size: 0.72rem; font-weight: 700; color: white; flex-shrink: 0;
+    }
 
-    table { width: 100%; border-collapse: collapse; background: white; border-radius: 8px; border: 1px solid var(--border); }
-    th, td { padding: 0.85rem 1rem; text-align: left; border-bottom: 1px solid var(--border); font-size: 0.9rem; }
-    th { background: #f1f5f9; color: #475569; }
-    .badge-status { padding: 0.2rem 0.6rem; border-radius: 12px; font-size: 0.75rem; font-weight: 600; }
-    .status-verified { background: #dcfce7; color: var(--success); }
-    .status-ready, .status-pending { background: #e0f2fe; color: var(--accent); }
-    .status-flagged { background: #fee2e2; color: var(--danger); }
-    .badge-flag { background: #fef3c7; color: var(--warning); padding: 0.2rem 0.5rem; border-radius: 4px; font-weight: 700; font-size: 0.75rem; }
+    /* ---------------- Tables ---------------- */
+    table { width: 100%; border-collapse: collapse; background: white; border-radius: 13px; border: 1px solid var(--border); overflow: hidden; box-shadow: var(--shadow-sm); }
+    th, td { padding: 0.85rem 1rem; text-align: left; border-bottom: 1px solid var(--border); font-size: 0.87rem; }
+    th { background: #f8fafc; color: #475569; font-weight: 700; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; }
+    tbody tr { transition: background 0.15s ease; }
+    tbody tr:hover { background: #f8faff; }
+    tbody tr:last-child td { border-bottom: none; }
 
-    .btn { background: var(--primary); color: white; border: none; padding: 0.65rem 1.2rem; border-radius: 6px; cursor: pointer; font-weight: 500; }
-    .btn:hover { background: var(--primary-hover); }
-    .btn-sm { padding: 0.35rem 0.7rem; font-size: 0.8rem; }
-    .btn-logout { background: transparent; border: 1px solid #475569; color: #94a3b8; cursor: pointer; border-radius: 4px; padding: 0.3rem 0.6rem; }
-    .btn-logout:hover { background: #ef4444; color: white; }
+    .badge-status { padding: 0.28rem 0.68rem; border-radius: 20px; font-size: 0.72rem; font-weight: 700; display: inline-flex; align-items: center; gap: 0.35rem; }
+    .badge-status::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+    .status-verified { background: #d1fae5; color: #059669; }
+    .status-pending { background: #dbeafe; color: #2563eb; }
+    .status-flagged { background: #fee2e2; color: #dc2626; }
+    .status-flagged::before { animation: pulseDot 1.6s infinite; }
+    .status-ready { background: #f1f5f9; color: #475569; }
+    .badge-flag { background: #fef3c7; color: var(--warning); padding: 0.22rem 0.55rem; border-radius: 6px; font-weight: 700; font-size: 0.74rem; }
+    .badge-type { background: #ede9fe; color: #6d28d9; padding: 0.18rem 0.55rem; border-radius: 6px; font-size: 0.7rem; font-weight: 700; }
 
-    /* Land Identity Grouped Modal UI */
-    .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 100; }
-    .modal-box { background: white; padding: 2rem; border-radius: 8px; width: 780px; max-width: 95%; max-height: 90vh; overflow-y: auto; }
-    .identity-section { border: 1px solid var(--border); border-radius: 8px; padding: 1rem; margin-bottom: 1.2rem; background: #fafafa; }
-    .identity-section h4 { margin: 0 0 0.8rem 0; color: var(--primary); font-size: 0.95rem; border-bottom: 1px solid var(--border); padding-bottom: 0.4rem; }
-    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.8rem; }
-    .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.8rem; }
+    /* ---------------- Buttons ---------------- */
+    .btn {
+      background: linear-gradient(135deg, var(--primary), #4338ca);
+      color: white; border: none; padding: 0.68rem 1.3rem; border-radius: 10px;
+      cursor: pointer; font-weight: 600; font-size: 0.88rem;
+      transition: transform 0.15s ease, box-shadow 0.15s ease; box-shadow: 0 4px 12px rgba(79,70,229,0.28);
+    }
+    .btn:hover { transform: translateY(-1px); box-shadow: 0 6px 18px rgba(79,70,229,0.38); }
+    .btn:active { transform: translateY(0); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none; }
+    .btn-sm { padding: 0.4rem 0.8rem; font-size: 0.78rem; border-radius: 7px; }
+    .btn-danger-sm { background: var(--danger); color: white; border: none; padding: 0.35rem 0.7rem; font-size: 0.78rem; border-radius: 7px; cursor: pointer; transition: transform 0.15s ease; }
+    .btn-danger-sm:hover { transform: translateY(-1px); }
+    .btn-outline-sm { background: white; color: var(--primary); border: 1.5px solid var(--primary); padding: 0.33rem 0.7rem; font-size: 0.78rem; border-radius: 7px; cursor: pointer; margin-right: 0.35rem; transition: all 0.15s ease; }
+    .btn-outline-sm:hover { background: var(--primary-light); }
+
+    .chip-row { display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap; }
+    .filter-chip {
+      background: white; border: 1.5px solid var(--border); padding: 0.4rem 0.9rem; border-radius: 20px;
+      font-size: 0.8rem; font-weight: 600; color: #475569; cursor: pointer; transition: all 0.15s ease;
+    }
+    .filter-chip:hover { border-color: var(--primary); color: var(--primary); }
+    .filter-chip.active { background: linear-gradient(135deg, var(--primary), #4338ca); color: white; border-color: transparent; box-shadow: 0 4px 12px rgba(79,70,229,0.3); }
+
+    .search-wrap { position: relative; max-width: 360px; margin-bottom: 1rem; }
+    .search-wrap input {
+      width: 100%; padding: 0.68rem 0.9rem 0.68rem 2.3rem; border: 1.5px solid var(--border); border-radius: 10px;
+      font-size: 0.88rem; font-family: inherit; background: white; transition: all 0.2s ease;
+    }
+    .search-wrap input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 4px rgba(79,70,229,0.12); }
+    .search-wrap .sic { position: absolute; left: 0.8rem; top: 50%; transform: translateY(-50%); color: #94a3b8; font-size: 0.9rem; }
+
+    .empty-state { text-align: center; padding: 2.4rem 1rem; color: #94a3b8; }
+    .empty-state .ic { font-size: 2.2rem; margin-bottom: 0.5rem; display: block; opacity: 0.7; }
+
+    /* ---------------- Field Confidence Indicators ---------------- */
+    .field-uncertain { border: 2px solid var(--danger) !important; background: #fff5f5 !important; animation: fadeIn 0.3s ease; }
+    .field-certain { border: 1.5px solid var(--success) !important; background: #f0fdf9 !important; }
+    .ci-low { color: var(--danger); font-size: 0.7rem; font-weight: 700; margin-left: 0.3rem; }
+    .ci-high { color: var(--success); font-size: 0.7rem; font-weight: 700; margin-left: 0.3rem; }
+
+    .identity-section {
+      border: 1px solid var(--border); border-radius: 13px; padding: 0.95rem 1rem;
+      margin-bottom: 0.85rem; background: #fafbfe; transition: box-shadow 0.2s ease;
+    }
+    .identity-section:hover { box-shadow: var(--shadow-sm); }
+    .identity-section h4 { margin: 0 0 0.65rem 0; color: var(--primary); font-size: 0.86rem; font-weight: 700; border-bottom: 1px solid var(--border); padding-bottom: 0.4rem; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; }
+    .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.6rem; }
+
+    /* ---------------- Modal / Split View ---------------- */
+    .modal {
+      position: fixed; inset: 0; background: rgba(11,17,32,0.68); backdrop-filter: blur(4px);
+      display: flex; align-items: center; justify-content: center; z-index: 100;
+      animation: fadeIn 0.2s ease;
+    }
+    .modal-box {
+      background: white; padding: 1.7rem; border-radius: 18px;
+      width: 1240px; max-width: 96%; max-height: 94vh; overflow-y: auto;
+      box-shadow: var(--shadow-lg); animation: popIn 0.28s cubic-bezier(.2,.9,.3,1.2);
+    }
+    .split-view { display: grid; grid-template-columns: 1.05fr 1fr; gap: 1.2rem; }
+    .doc-viewer-box {
+      background: #0b1120; border: 1px solid var(--border); border-radius: 13px;
+      padding: 0.5rem; text-align: center; height: 600px; overflow: hidden;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .doc-viewer-box iframe, .doc-viewer-box img { width: 100%; height: 100%; object-fit: contain; border: none; background: white; border-radius: 6px; }
+
+    /* ---------------- Misc: spinner, toasts, skeleton ---------------- */
+    .spinner {
+      width: 16px; height: 16px; border: 2.5px solid rgba(255,255,255,0.4);
+      border-top-color: white; border-radius: 50%; display: inline-block;
+      animation: spin 0.7s linear infinite; margin-right: 0.5rem; vertical-align: -2px;
+    }
+    .skeleton-row td {
+      background: linear-gradient(90deg, #f1f5f9 25%, #e9edf3 37%, #f1f5f9 63%);
+      background-size: 800px 100%; animation: shimmer 1.4s infinite linear;
+      color: transparent; border-radius: 4px;
+    }
+
+    #toast-stack {
+      position: fixed; top: 1.2rem; right: 1.2rem; z-index: 999;
+      display: flex; flex-direction: column; gap: 0.6rem; max-width: 340px;
+    }
+    .toast {
+      background: white; border-radius: 12px; padding: 0.85rem 1rem;
+      box-shadow: var(--shadow-lg); border-left: 4px solid var(--primary);
+      font-size: 0.86rem; animation: slideInRight 0.3s ease; display: flex; gap: 0.6rem; align-items: flex-start;
+    }
+    .toast.success { border-left-color: var(--success); }
+    .toast.error { border-left-color: var(--danger); }
+    .toast.warning { border-left-color: var(--warning); }
+    .toast .toast-icon { font-size: 1.1rem; }
+    .toast.hide { animation: slideOutRight 0.25s ease forwards; }
   </style>
 </head>
 <body>
 
-  <!-- Authentication Panel -->
+  <div id="toast-stack"></div>
+
+  <!-- Login -->
   <div id="auth-panel" class="auth-container">
-    <div class="auth-card">
-      <h2>BharatVault</h2>
-      <p>Secure Portal for Land Record Validation</p>
-      <form id="login-form">
-        <div class="form-group">
-          <label>User ID / Username</label>
-          <input type="text" id="login-username" required autocomplete="username">
+    <div class="auth-visual">
+      <div class="auth-blob b1"></div>
+      <div class="auth-blob b2"></div>
+      <div class="auth-blob b3"></div>
+      <div class="auth-visual-content">
+        <span class="tag">🏛️ Department of Land Resources</span>
+        <h1>Digitize, verify & <span>secure</span> every land record.</h1>
+        <p class="lead">BharatVault uses OCR extraction and automated validation rules to turn scanned deeds into a trustworthy, searchable land registry — with a human always in the loop.</p>
+        <div class="auth-feature-list">
+          <div class="auth-feature"><span class="ic">📄</span> Instant OCR extraction of Khasra, Khata & ownership fields</div>
+          <div class="auth-feature"><span class="ic">🛡️</span> Automated duplicate & consistency validation rules</div>
+          <div class="auth-feature"><span class="ic">✅</span> Side-by-side soft-copy verification workflow</div>
+          <div class="auth-feature"><span class="ic">🔐</span> Full role-based access with a complete audit trail</div>
         </div>
-        <div class="form-group">
-          <label>Password</label>
-          <input type="password" id="login-password" required autocomplete="current-password">
+        <div class="auth-stats">
+          <div><b>100%</b><span>Digital Trail</span></div>
+          <div><b>5</b><span>Validation Rules</span></div>
+          <div><b>24/7</b><span>Access</span></div>
         </div>
-        <button type="submit" class="btn" style="width:100%;">Sign In</button>
-      </form>
+      </div>
+    </div>
+    <div class="auth-form-side">
+      <div class="auth-card">
+        <div class="auth-logo">🏛️</div>
+        <h2>BharatVault</h2>
+        <p class="sub">Intelligent Land Record & Verification System</p>
+        <form id="login-form">
+          <div class="form-group"><label>User ID</label><input type="text" id="login-username" required autocomplete="username"></div>
+          <div class="form-group"><label>Password</label><input type="password" id="login-password" required autocomplete="current-password"></div>
+          <button type="submit" class="btn" style="width:100%;">Sign In</button>
+        </form>
+        <p class="auth-footnote">Secured access · Clerk, Revenue Officer & Admin roles</p>
+      </div>
     </div>
   </div>
 
-  <!-- Application Shell -->
+  <!-- Shell -->
   <div id="app-shell" class="app-shell hidden">
     <aside class="sidebar">
       <div class="sidebar-brand">
-        <h1>BharatVault</h1>
-        <span>DOLR Land Portal</span>
+        <div class="mark">🏛️</div>
+        <div>
+          <h1>BharatVault</h1>
+          <span>DOLR Land Portal</span>
+        </div>
       </div>
+      <div class="sidebar-section-label">Workspace</div>
       <ul class="sidebar-menu">
-        <li class="sidebar-item active" onclick="showTab('dashboard-view', event)">📊 Dashboard</li>
-        <li class="sidebar-item" onclick="showTab('upload-view', event)">📥 Ingest Document</li>
-        <li class="sidebar-item" onclick="showTab('records-view', event)">📑 Land Registry</li>
-        <li id="nav-users" class="sidebar-item hidden" onclick="showTab('users-view', event)">👥 User Access</li>
-        <li id="nav-audit" class="sidebar-item hidden" onclick="showTab('audit-view', event)">🛡️ Security Audit</li>
+        <li class="sidebar-item active" onclick="showTab('dashboard-view', event)"><span class="ic">📊</span> Dashboard</li>
+        <li class="sidebar-item" onclick="showTab('upload-view', event)"><span class="ic">📥</span> Upload Files</li>
+        <li class="sidebar-item" onclick="showTab('records-view', event)"><span class="ic">📑</span> All Records</li>
       </ul>
+      <div id="admin-section-label" class="sidebar-section-label hidden">Administration</div>
+      <ul class="sidebar-menu">
+        <li id="nav-users" class="sidebar-item hidden" onclick="showTab('users-view', event)"><span class="ic">👥</span> User Accounts</li>
+        <li id="nav-audit" class="sidebar-item hidden" onclick="showTab('audit-view', event)"><span class="ic">🛡️</span> Audit Log</li>
+      </ul>
+      <div class="sidebar-spacer"></div>
+      <div class="sidebar-help">
+        <b>💡 Quick tip</b>
+        Click <em>Double-Check</em> on any record to compare it against the original soft copy before approving.
+      </div>
       <div class="sidebar-footer">
         <div class="user-info">
-          <div class="name" id="display-name">User</div>
-          <div class="role" id="display-role">Role</div>
+          <div class="avatar" id="display-avatar">U</div>
+          <div>
+            <div class="name" id="display-name">User</div>
+            <div class="role" id="display-role">Role</div>
+          </div>
         </div>
         <button onclick="logout()" class="btn-logout">Exit</button>
       </div>
     </aside>
 
-    <main class="content-area">
-      <!-- 1. Categorized Dashboard View -->
+    <div class="app-main-col">
+      <div class="topbar">
+        <div>
+          <div class="topbar-greeting"><span class="wave">👋</span> <span id="greeting-text">Welcome back</span></div>
+          <div class="topbar-sub">Here's what's happening with the land registry today.</div>
+        </div>
+        <div class="topbar-right">
+          <span class="status-pill">● System Operational</span>
+          <div class="live-clock"><span class="dot"></span><span id="live-clock-text">--:--:--</span></div>
+        </div>
+      </div>
+
+      <main class="content-area">
+      <!-- 1. Dashboard View -->
       <section id="dashboard-view" class="tab-panel">
-        <h2>System Dashboard</h2>
-        <div class="metrics-grid">
-          <div class="metric-card"><div class="num" id="m-total">0</div><div class="label">Total Records</div></div>
-          <div class="metric-card"><div class="num" id="m-verified" style="color:var(--success);">0</div><div class="label">Verified Records</div></div>
-          <div class="metric-card"><div class="num" id="m-pending" style="color:var(--accent);">0</div><div class="label">Pending Verification</div></div>
-          <div class="metric-card"><div class="num" id="m-flagged" style="color:var(--danger);">0</div><div class="label">Flagged Issues</div></div>
+        <div class="hero-banner">
+          <div>
+            <h2>Land Identity Verification Pipeline</h2>
+            <p>Every uploaded deed is OCR-scanned, auto-validated against duplicate & consistency rules, and routed for human sign-off — keeping your registry accurate and audit-ready.</p>
+          </div>
+          <div class="hero-badge"><div class="n" id="hero-total">0</div><div class="l">Total Records</div></div>
         </div>
 
-        <h3>🚨 Flagged Documents (Needs Verification / Issues)</h3>
+        <div class="metrics-grid">
+          <div class="metric-card mc-total"><div class="icon-bubble">📁</div><div><div class="num" id="m-total">0</div><div class="label">Total Records</div></div></div>
+          <div class="metric-card mc-flagged"><div class="icon-bubble">🚨</div><div><div class="num" id="m-flagged" style="color:var(--danger);">0</div><div class="label">Flagged Issues</div></div></div>
+          <div class="metric-card mc-pending"><div class="icon-bubble">⏳</div><div><div class="num" id="m-pending" style="color:var(--accent);">0</div><div class="label">Pending Verification</div></div></div>
+          <div class="metric-card mc-verified"><div class="icon-bubble">✅</div><div><div class="num" id="m-verified" style="color:var(--success);">0</div><div class="label">Verified Records</div></div></div>
+        </div>
+
+        <div class="insight-row">
+          <div class="card chart-card">
+            <div class="donut-wrap">
+              <svg viewBox="0 0 220 220" width="148" height="148">
+                <circle cx="110" cy="110" r="92" fill="none" stroke="#eef1f7" stroke-width="20"></circle>
+                <circle id="donut-flagged" cx="110" cy="110" r="92" fill="none" stroke="#ef4444" stroke-width="20" stroke-dasharray="0 578" stroke-linecap="round"></circle>
+                <circle id="donut-pending" cx="110" cy="110" r="92" fill="none" stroke="#3b82f6" stroke-width="20" stroke-dasharray="0 578" stroke-linecap="round"></circle>
+                <circle id="donut-verified" cx="110" cy="110" r="92" fill="none" stroke="#10b981" stroke-width="20" stroke-dasharray="0 578" stroke-linecap="round"></circle>
+              </svg>
+              <div class="donut-center"><div class="n" id="donut-center-num">0</div><div class="l">Records</div></div>
+            </div>
+            <div class="legend">
+              <div class="legend-item"><span class="sw" style="background:#ef4444;"></span> Flagged <b id="legend-flagged">0</b></div>
+              <div class="legend-item"><span class="sw" style="background:#3b82f6;"></span> Pending <b id="legend-pending">0</b></div>
+              <div class="legend-item"><span class="sw" style="background:#10b981;"></span> Verified <b id="legend-verified">0</b></div>
+            </div>
+          </div>
+          <div class="card tips-card">
+            <h3>🧭 Verification Playbook</h3>
+            <ul>
+              <li><span class="bullet">1</span> Ingest scanned deeds from the <b>Upload Files</b> tab — OCR runs automatically and fields are auto-classified.</li>
+              <li><span class="bullet">2</span> Records with validation issues land in <b>Flagged Documents</b> below — open <em>Double-Check</em> to compare against the original soft copy.</li>
+              <li><span class="bullet">3</span> Correct any low-confidence field (highlighted in red), then <b>Approve as Verified</b> or keep it <b>Flagged</b> for further review.</li>
+            </ul>
+          </div>
+        </div>
+
+        <h3>🚨 Flagged Documents (Needs Verification)</h3>
         <table id="dash-flagged-table" style="margin-bottom: 2rem;">
           <thead><tr><th>ID</th><th>Village</th><th>Khasra #</th><th>Owner Name</th><th>Issues</th><th>Action</th></tr></thead>
           <tbody></tbody>
         </table>
 
-        <h3>⏳ Pending Documents (Newly Ingested / Ready)</h3>
+        <h3>⏳ Pending Documents</h3>
         <table id="dash-pending-table" style="margin-bottom: 2rem;">
           <thead><tr><th>ID</th><th>Village</th><th>Khasra #</th><th>Owner Name</th><th>Status</th><th>Action</th></tr></thead>
           <tbody></tbody>
         </table>
 
-        <h3>✅ Verified Documents (Officer Approved)</h3>
+        <h3>✅ Verified Documents</h3>
         <table id="dash-verified-table">
           <thead><tr><th>ID</th><th>Village</th><th>Khasra #</th><th>Owner Name</th><th>Status</th><th>Action</th></tr></thead>
           <tbody></tbody>
         </table>
       </section>
 
-      <!-- 2. Document Ingestion View -->
+      <!-- 2. Upload Files with Staged Queue -->
       <section id="upload-view" class="tab-panel hidden">
-        <h2>Document Ingestion</h2>
-        <div class="card" style="max-width: 650px;">
-          <p>Select scanned deeds/records to extract Land Identity fields.</p>
-          <div class="file-drop-area" onclick="document.getElementById('file-input').click()">
-            <p style="margin: 0; font-weight: 500;">📁 Click here to select file(s)</p>
-            <small style="color: #94a3b8;">Accepts multiple PDFs, JPGs, PNGs</small>
-            <input type="file" id="file-input" multiple accept=".pdf,.png,.jpg,.jpeg,.txt" style="display:none;" onchange="handleFileSelect(event)">
+        <div class="panel-header"><div><h2>Document Ingestion</h2><div class="desc">Upload scanned deeds — OCR extraction and validation run automatically.</div></div></div>
+        <div style="display:grid; grid-template-columns: 1.3fr 1fr; gap: 1.4rem; max-width: 950px;">
+          <div class="card">
+            <p>Select land deeds/records to extract the complete Land Identity structure.</p>
+            <div class="file-drop-area" id="file-drop-area" onclick="document.getElementById('file-input').click()">
+              <div class="drop-icon">📁</div>
+              <p style="margin: 0; font-weight: 700;">Click or drag files here</p>
+              <small style="color: #94a3b8;">Accepts multiple PDFs, PNGs, JPGs</small>
+              <div class="format-chips">
+                <span class="format-chip">PDF</span><span class="format-chip">PNG</span><span class="format-chip">JPG</span><span class="format-chip">JPEG</span><span class="format-chip">TXT</span>
+              </div>
+              <input type="file" id="file-input" multiple accept=".pdf,.png,.jpg,.jpeg,.txt" style="display:none;" onchange="handleFileSelect(event)">
+            </div>
+            <ul id="staged-file-list" class="file-list"></ul>
+            <div style="margin-top: 1.2rem; display: flex; gap: 0.8rem; align-items: center;">
+              <button type="button" class="btn" id="upload-btn" onclick="submitFiles()" disabled>Ingest Selected Files</button>
+              <button type="button" class="btn" style="background:#64748b; box-shadow:none;" onclick="clearAllFiles()">Clear All</button>
+              <span id="upload-status" style="font-size:0.85rem; color:#64748b;"></span>
+            </div>
           </div>
-          <ul id="staged-file-list" class="file-list"></ul>
-          <div style="margin-top: 1.2rem; display: flex; gap: 0.8rem; align-items: center;">
-            <button type="button" class="btn" id="upload-btn" onclick="submitFiles()" disabled>Extract & Ingest</button>
-            <button type="button" class="btn" style="background:#64748b;" onclick="clearAllFiles()">Clear All</button>
-            <span id="upload-status" style="font-size:0.85rem; color:#64748b;"></span>
+          <div class="upload-side-note">
+            <h4>⚙️ What happens next</h4>
+            <div class="step"><span class="num">1</span> Each file is scanned with OCR to extract text and identify quality.</div>
+            <div class="step"><span class="num">2</span> Land identity fields (owner, khasra, area, dates...) are parsed out automatically.</div>
+            <div class="step"><span class="num">3</span> Duplicate & consistency checks run — clean records auto-verify, flagged ones need review.</div>
+            <div class="step"><span class="num">4</span> Everything lands in your <b>Dashboard</b>, ready to double-check.</div>
           </div>
         </div>
       </section>
 
-      <!-- 3. Land Registry with Live Search -->
+      <!-- 3. All Records with Live Search -->
       <section id="records-view" class="tab-panel hidden">
-        <h2>Land Record Registry</h2>
-        <div class="table-toolbar">
-          <input type="text" id="registry-search" class="search-input" placeholder="🔍 Search by Khasra #, Village, Owner, District..." oninput="filterRegistry()">
-          <span id="registry-count" style="font-size:0.85rem; color:#64748b;"></span>
+        <div class="panel-header"><div><h2>Master Land Registry</h2><div class="desc">Search and filter every ingested record.</div></div></div>
+        <div class="search-wrap">
+          <span class="sic">🔍</span>
+          <input type="text" id="registry-search" placeholder="Search Khasra #, Village, or Owner..." oninput="filterRegistry()">
+        </div>
+        <div class="chip-row">
+          <span class="filter-chip active" data-status="all" onclick="setRegistryFilter('all', event)">All</span>
+          <span class="filter-chip" data-status="Flagged" onclick="setRegistryFilter('Flagged', event)">Flagged</span>
+          <span class="filter-chip" data-status="Pending Verification" onclick="setRegistryFilter('Pending Verification', event)">Pending</span>
+          <span class="filter-chip" data-status="Verified" onclick="setRegistryFilter('Verified', event)">Verified</span>
         </div>
         <table id="records-table">
-          <thead>
-            <tr><th>ID</th><th>Type</th><th>Status</th><th>Village</th><th>Khasra #</th><th>Owner Name</th><th>Total Area</th><th>Flags</th><th>Action</th></tr>
-          </thead>
+          <thead><tr><th>ID</th><th>Khasra #</th><th>Village</th><th>Owner Name</th><th>Total Area</th><th>Status</th><th>Action</th></tr></thead>
           <tbody></tbody>
         </table>
       </section>
 
-      <!-- User Management Panel -->
+      <!-- 4. User Accounts (Admin Only) -->
       <section id="users-view" class="tab-panel hidden">
-        <h2>User Provisioning</h2>
+        <div class="panel-header"><div><h2>User Management</h2><div class="desc">Create and manage Clerk, Revenue Officer & Admin accounts.</div></div></div>
         <div class="card" style="max-width: 500px;">
           <form id="create-user-form">
             <div class="form-group"><label>Full Name</label><input type="text" id="new-user-fullname" required></div>
@@ -210,7 +684,7 @@
                 <option value="Admin">Admin</option>
               </select>
             </div>
-            <button type="submit" class="btn">Add User</button>
+            <button type="submit" class="btn">Register User</button>
           </form>
         </div>
         <table id="users-table">
@@ -219,142 +693,310 @@
         </table>
       </section>
 
-      <!-- Audit Panel -->
+      <!-- 5. Audit Log (Admin Only) -->
       <section id="audit-view" class="tab-panel hidden">
-        <h2>Security Audit Trail</h2>
+        <div class="panel-header"><div><h2>Security Audit Trail</h2><div class="desc">Full log of logins, uploads, verifications and admin actions.</div></div></div>
         <table id="audit-table">
-          <thead><tr><th>Time</th><th>User</th><th>Role</th><th>Action</th><th>Details</th></tr></thead>
+          <thead><tr><th>Timestamp</th><th>User</th><th>Role</th><th>Action</th><th>Details</th></tr></thead>
           <tbody></tbody>
         </table>
       </section>
 
-      <!-- 4. Land Identity Verification Modal -->
+      <!-- Two-Panel Split Review Screen with Soft-Copy Viewer & Complete Land Identity -->
       <div id="review-modal" class="modal hidden">
         <div class="modal-box">
-          <h3 style="margin-top:0;">Land Identity & Record Verification</h3>
-          <form id="verify-form">
-            <input type="hidden" id="edit-id">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
+            <h3 style="margin:0;">Double-Check & Verify Record (Land Identity Architecture)</h3>
+            <button type="button" class="btn-sm" style="background:#64748b; box-shadow:none;" onclick="closeModal()">✕ Close</button>
+          </div>
 
-            <!-- Category: Location -->
-            <div class="identity-section">
-              <h4>📍 Location</h4>
-              <div class="grid-3">
-                <div class="form-group"><label>District</label><input type="text" id="edit-district"></div>
-                <div class="form-group"><label>Tehsil</label><input type="text" id="edit-tehsil"></div>
-                <div class="form-group"><label>Village / Urban Locality</label><input type="text" id="edit-village"></div>
+          <div class="split-view">
+            <!-- Left Panel: Authenticated Soft Copy Viewer -->
+            <div>
+              <h4 style="margin:0 0 0.5rem 0;">📄 Original Uploaded Soft Copy</h4>
+              <div class="doc-viewer-box" id="doc-preview-area">
+                <span style="color:#94a3b8;">Loading document preview...</span>
               </div>
             </div>
 
-            <!-- Category: Land Identifiers -->
-            <div class="identity-section">
-              <h4>🔖 Land Identifiers</h4>
-              <div class="grid-2">
-                <div class="form-group"><label>Khasra No.</label><input type="text" id="edit-khasra"></div>
-                <div class="form-group"><label>Khata No.</label><input type="text" id="edit-khata"></div>
-                <div class="form-group"><label>Plot No.</label><input type="text" id="edit-plot"></div>
-                <div class="form-group"><label>Property ID (urban)</label><input type="text" id="edit-property-id"></div>
-              </div>
-            </div>
+            <!-- Right Panel: Full Grouped Land Identity Extraction Form -->
+            <div>
+              <h4 style="margin:0 0 0.5rem 0;">Extracted Land Identity Fields</h4>
+              <form id="verify-form">
+                <input type="hidden" id="edit-id">
 
-            <!-- Category: Person / Holding -->
-            <div class="identity-section">
-              <h4>👤 Person / Holding</h4>
-              <div class="grid-3">
-                <div class="form-group"><label>Recorded Holder (Buyer/Owner)</label><input type="text" id="edit-owner"></div>
-                <div class="form-group"><label>Vendor / Seller</label><input type="text" id="edit-seller"></div>
-                <div class="form-group"><label>Share / Hissa</label><input type="text" id="edit-share"></div>
-              </div>
-            </div>
+                <!-- 1. Location -->
+                <div class="identity-section">
+                  <h4>📍 Location</h4>
+                  <div class="grid-3">
+                    <div class="form-group">
+                      <label>District <span id="ci-district"></span></label>
+                      <input type="text" id="edit-district">
+                    </div>
+                    <div class="form-group">
+                      <label>Tehsil <span id="ci-tehsil"></span></label>
+                      <input type="text" id="edit-tehsil">
+                    </div>
+                    <div class="form-group">
+                      <label>Village / Locality <span id="ci-village"></span></label>
+                      <input type="text" id="edit-village">
+                    </div>
+                  </div>
+                </div>
 
-            <!-- Category: Property Details -->
-            <div class="identity-section">
-              <h4>📐 Property Details</h4>
-              <div class="grid-3">
-                <div class="form-group"><label>Total Area (Bigha/Acre)</label><input type="number" step="0.01" id="edit-area"></div>
-                <div class="form-group"><label>Land Use / Classification</label><input type="text" id="edit-land-use"></div>
-                <div class="form-group"><label>Consideration (Rs.)</label><input type="number" step="0.01" id="edit-consideration"></div>
-              </div>
-            </div>
+                <!-- 2. Land Identifiers -->
+                <div class="identity-section">
+                  <h4>🔖 Land Identifiers</h4>
+                  <div class="grid-2">
+                    <div class="form-group">
+                      <label>Khasra No. <span id="ci-khasra"></span></label>
+                      <input type="text" id="edit-khasra">
+                    </div>
+                    <div class="form-group">
+                      <label>Khata No. <span id="ci-khata"></span></label>
+                      <input type="text" id="edit-khata">
+                    </div>
+                    <div class="form-group">
+                      <label>Plot No. <span id="ci-plot"></span></label>
+                      <input type="text" id="edit-plot">
+                    </div>
+                    <div class="form-group">
+                      <label>Property ID (Urban) <span id="ci-property-id"></span></label>
+                      <input type="text" id="edit-property-id">
+                    </div>
+                  </div>
+                </div>
 
-            <!-- Category: History / Deeds -->
-            <div class="identity-section">
-              <h4>📜 History & Registration</h4>
-              <div class="grid-3">
-                <div class="form-group"><label>Registration / Deed Date</label><input type="date" id="edit-reg-date"></div>
-                <div class="form-group"><label>Mutation Date</label><input type="date" id="edit-mut-date"></div>
-                <div class="form-group"><label>Serial / Deed No.</label><input type="text" id="edit-serial"></div>
-              </div>
-            </div>
+                <!-- 3. Person / Holding -->
+                <div class="identity-section">
+                  <h4>👤 Person / Holding</h4>
+                  <div class="grid-3">
+                    <div class="form-group">
+                      <label>Recorded Holder (Owner) <span id="ci-owner"></span></label>
+                      <input type="text" id="edit-owner">
+                    </div>
+                    <div class="form-group">
+                      <label>Vendor / Seller <span id="ci-seller"></span></label>
+                      <input type="text" id="edit-seller">
+                    </div>
+                    <div class="form-group">
+                      <label>Share / Hissa <span id="ci-share"></span></label>
+                      <input type="text" id="edit-share">
+                    </div>
+                  </div>
+                </div>
 
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-top:1.5rem;">
-              <button type="button" class="btn" style="background:#64748b;" onclick="closeModal()">Cancel</button>
-              <div style="display:flex; gap:0.6rem;">
-                <button type="button" class="btn" style="background:var(--warning);" onclick="saveRecord('Flagged')">Mark as Flagged</button>
-                <button type="button" class="btn" style="background:var(--success);" onclick="saveRecord('Verified')">Approve as Verified</button>
-              </div>
+                <!-- 4. Property Details -->
+                <div class="identity-section">
+                  <h4>📐 Property Details</h4>
+                  <div class="grid-3">
+                    <div class="form-group">
+                      <label>Total Area (Bigha) <span id="ci-area"></span></label>
+                      <input type="number" step="0.01" id="edit-area">
+                    </div>
+                    <div class="form-group">
+                      <label>Land Use / Classification <span id="ci-land-use"></span></label>
+                      <input type="text" id="edit-land-use">
+                    </div>
+                    <div class="form-group">
+                      <label>Consideration (Rs.) <span id="ci-consideration"></span></label>
+                      <input type="number" step="0.01" id="edit-consideration">
+                    </div>
+                  </div>
+                  <div class="form-group" style="margin-bottom:0;">
+                    <label>Boundaries / Description <span id="ci-boundaries"></span></label>
+                    <input type="text" id="edit-boundaries">
+                  </div>
+                </div>
+
+                <!-- 5. History & Deeds -->
+                <div class="identity-section">
+                  <h4>📜 History & Registration</h4>
+                  <div class="grid-3">
+                    <div class="form-group">
+                      <label>Registration Date <span id="ci-reg-date"></span></label>
+                      <input type="date" id="edit-reg-date">
+                    </div>
+                    <div class="form-group">
+                      <label>Mutation Date <span id="ci-mut-date"></span></label>
+                      <input type="date" id="edit-mut-date">
+                    </div>
+                    <div class="form-group">
+                      <label>Serial / Deed No. <span id="ci-serial"></span></label>
+                      <input type="text" id="edit-serial">
+                    </div>
+                  </div>
+                </div>
+
+                <div style="display:flex; gap:0.6rem; margin-top:1rem;">
+                  <button type="button" class="btn" style="background:linear-gradient(135deg, var(--warning), #d97706); flex:1;" onclick="saveRecord('Flagged')">Save as Flagged</button>
+                  <button type="button" class="btn" style="background:linear-gradient(135deg, var(--success), #059669); flex:1;" onclick="saveRecord('Verified')">Approve as Verified</button>
+                </div>
+              </form>
             </div>
-          </form>
+          </div>
         </div>
       </div>
-    </main>
+      </main>
+    </div>
   </div>
 
   <script>
     let authToken = localStorage.getItem("bv_token") || "";
     let userRole = localStorage.getItem("bv_role") || "";
-    let username = localStorage.getItem("bv_username") || "";
-    let fullName = localStorage.getItem("bv_name") || "";
     let allRecords = [];
     let selectedFiles = [];
+    let currentBlobUrl = null;
+    let registryStatusFilter = "all";
 
     const headers = () => ({ "Authorization": `Bearer ${authToken}`, "Content-Type": "application/json" });
 
-    function handleAuthError(res) {
-      if (res.status === 401) {
-        alert("Session expired. Please log in again.");
-        logout();
-        return true;
+    // ---------------- Toast notifications (replaces alert()) ----------------
+    function toast(message, type = "info", timeoutMs = 4200) {
+      const stack = document.getElementById("toast-stack");
+      const el = document.createElement("div");
+      el.className = `toast ${type}`;
+      const icons = { success: "✅", error: "⚠️", warning: "🔶", info: "ℹ️" };
+      el.innerHTML = `<span class="toast-icon">${icons[type] || icons.info}</span><span>${message}</span>`;
+      stack.appendChild(el);
+      setTimeout(() => {
+        el.classList.add("hide");
+        setTimeout(() => el.remove(), 250);
+      }, timeoutMs);
+    }
+
+    // ---------------- Animated counters for dashboard metrics ----------------
+    function animateCount(elId, target) {
+      const el = document.getElementById(elId);
+      if (!el) return;
+      const start = parseInt(el.innerText) || 0;
+      if (start === target) { el.innerText = target; return; }
+      const duration = 450;
+      const startTime = performance.now();
+      function step(now) {
+        const progress = Math.min((now - startTime) / duration, 1);
+        const eased = 1 - Math.pow(1 - progress, 3);
+        el.innerText = Math.round(start + (target - start) * eased);
+        if (progress < 1) requestAnimationFrame(step);
       }
-      return false;
+      requestAnimationFrame(step);
+    }
+
+    // ---------------- Live clock + greeting ----------------
+    function tickClock() {
+      const now = new Date();
+      const el = document.getElementById("live-clock-text");
+      if (el) el.innerText = now.toLocaleTimeString("en-IN", { hour12: true });
+      const greetEl = document.getElementById("greeting-text");
+      if (greetEl) {
+        const h = now.getHours();
+        const time = h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening";
+        const name = userRole ? `, ${userRole}` : "";
+        greetEl.innerText = `${time}${name}`;
+      }
+    }
+    setInterval(tickClock, 1000);
+
+    // ---------------- Dashboard status donut chart ----------------
+    function renderStatusChart(flaggedN, pendingN, verifiedN) {
+      const total = flaggedN + pendingN + verifiedN;
+      const circumference = 2 * Math.PI * 92;
+      document.getElementById("donut-center-num").innerText = total;
+
+      const segs = [
+        { id: "donut-flagged", value: flaggedN },
+        { id: "donut-pending", value: pendingN },
+        { id: "donut-verified", value: verifiedN }
+      ];
+      let offsetAccum = 0;
+      segs.forEach(seg => {
+        const frac = total > 0 ? seg.value / total : 0;
+        const len = frac * circumference;
+        const el = document.getElementById(seg.id);
+        if (!el) return;
+        el.setAttribute("stroke-dasharray", `${len} ${circumference - len}`);
+        el.setAttribute("stroke-dashoffset", -offsetAccum);
+        offsetAccum += len;
+      });
+
+      document.getElementById("legend-flagged").innerText = flaggedN;
+      document.getElementById("legend-pending").innerText = pendingN;
+      document.getElementById("legend-verified").innerText = verifiedN;
+      document.getElementById("hero-total").innerText = total;
     }
 
     document.addEventListener("DOMContentLoaded", () => {
+      tickClock();
       if (authToken) setupApp();
-
       document.getElementById("login-form").addEventListener("submit", async (e) => {
         e.preventDefault();
         const fd = new FormData();
         fd.append("username", document.getElementById("login-username").value);
         fd.append("password", document.getElementById("login-password").value);
-
         const res = await fetch("/api/auth/token", { method: "POST", body: fd });
         if (res.ok) {
           const data = await res.json();
           authToken = data.access_token;
           userRole = data.role;
-          username = data.username;
-          fullName = data.full_name;
           localStorage.setItem("bv_token", authToken);
           localStorage.setItem("bv_role", userRole);
-          localStorage.setItem("bv_username", username);
-          localStorage.setItem("bv_name", fullName);
           setupApp();
         } else {
-          alert("Invalid User ID or Password.");
+          toast("Invalid login credentials.", "error");
         }
       });
+
+      document.getElementById("create-user-form").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const payload = {
+          full_name: document.getElementById("new-user-fullname").value,
+          username: document.getElementById("new-user-username").value,
+          password: document.getElementById("new-user-password").value,
+          role: document.getElementById("new-user-role").value
+        };
+        const res = await fetch("/api/users", { method: "POST", headers: headers(), body: JSON.stringify(payload) });
+        if (res.ok) {
+          toast("User created successfully!", "success");
+          document.getElementById("create-user-form").reset();
+          loadUsers();
+        } else {
+          toast("Failed to register user.", "error");
+        }
+      });
+
+      // Drag-and-drop polish for the upload zone (reuses the same file handling logic)
+      const dropArea = document.getElementById("file-drop-area");
+      if (dropArea) {
+        ["dragenter", "dragover"].forEach(evt =>
+          dropArea.addEventListener(evt, (e) => { e.preventDefault(); e.stopPropagation(); dropArea.classList.add("drag-over"); })
+        );
+        ["dragleave", "drop"].forEach(evt =>
+          dropArea.addEventListener(evt, (e) => { e.preventDefault(); e.stopPropagation(); dropArea.classList.remove("drag-over"); })
+        );
+        dropArea.addEventListener("drop", (e) => {
+          const files = Array.from(e.dataTransfer.files || []);
+          files.forEach(f => {
+            if (!selectedFiles.some(x => x.name === f.name && x.size === f.size)) {
+              selectedFiles.push(f);
+            }
+          });
+          renderSelectedFiles();
+        });
+      }
     });
 
     function setupApp() {
       document.getElementById("auth-panel").classList.add("hidden");
       document.getElementById("app-shell").classList.remove("hidden");
-      document.getElementById("display-name").innerText = fullName || username;
+      document.getElementById("display-name").innerText = userRole;
       document.getElementById("display-role").innerText = userRole;
-
+      document.getElementById("display-avatar").innerText = (userRole || "U").charAt(0).toUpperCase();
       if (userRole === "Admin") {
         document.getElementById("nav-users").classList.remove("hidden");
         document.getElementById("nav-audit").classList.remove("hidden");
+        document.getElementById("admin-section-label").classList.remove("hidden");
       }
+      tickClock();
       loadRecords();
     }
 
@@ -366,10 +1008,8 @@
     function showTab(tabId, evt) {
       document.querySelectorAll(".tab-panel").forEach(el => el.classList.add("hidden"));
       document.querySelectorAll(".sidebar-item").forEach(el => el.classList.remove("active"));
-      const target = document.getElementById(tabId);
-      if (target) target.classList.remove("hidden");
-      if (evt && evt.currentTarget) evt.currentTarget.classList.add("active");
-
+      document.getElementById(tabId).classList.remove("hidden");
+      if (evt) evt.currentTarget.classList.add("active");
       loadRecords();
       if (tabId === "users-view") loadUsers();
       if (tabId === "audit-view") loadAudit();
@@ -412,153 +1052,197 @@
     }
 
     async function submitFiles() {
-      if (selectedFiles.length === 0) return;
+      if (!selectedFiles.length) return;
       const fd = new FormData();
       selectedFiles.forEach(f => fd.append("files", f));
 
-      const uploadBtn = document.getElementById("upload-btn");
-      const statusEl = document.getElementById("upload-status");
-      uploadBtn.disabled = true;
-      statusEl.innerText = "Extracting Land Identity...";
+      const btn = document.getElementById("upload-btn");
+      const originalLabel = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = `<span class="spinner"></span>Analyzing...`;
+      document.getElementById("upload-status").innerText = "Running OCR & validation - this can take a few seconds...";
 
-      try {
-        const res = await fetch("/api/records/upload", { method: "POST", headers: { "Authorization": `Bearer ${authToken}` }, body: fd });
-        if (handleAuthError(res)) return;
-        if (res.ok) {
-          alert("Document(s) ingested successfully.");
-          clearAllFiles();
-          statusEl.innerText = "";
-          showTab("records-view");
-        } else {
-          alert("Ingestion failed.");
-        }
-      } catch (err) {
-        alert("Server unreachable.");
-      } finally {
-        statusEl.innerText = "";
-        uploadBtn.disabled = false;
+      const res = await fetch("/api/records/upload", { method: "POST", headers: { "Authorization": `Bearer ${authToken}` }, body: fd });
+
+      btn.disabled = false;
+      btn.innerHTML = originalLabel;
+
+      if (res.ok) {
+        toast("Files ingested successfully.", "success");
+        clearAllFiles();
+        document.getElementById("upload-status").innerText = "";
+        showTab("dashboard-view");
+      } else {
+        toast("Upload error - please check the file and try again.", "error");
+        document.getElementById("upload-status").innerText = "";
       }
     }
 
     async function loadRecords() {
       const res = await fetch("/api/records", { headers: headers() });
-      if (handleAuthError(res) || !res.ok) return;
+      if (!res.ok) return;
       allRecords = await res.json();
-      renderDashboardBreakdown();
+
+      const flagged = allRecords.filter(r => r.status === "Flagged");
+      const pending = allRecords.filter(r => r.status === "Pending Verification");
+      const verified = allRecords.filter(r => r.status === "Verified");
+
+      animateCount("m-total", allRecords.length);
+      animateCount("m-flagged", flagged.length);
+      animateCount("m-pending", pending.length);
+      animateCount("m-verified", verified.length);
+      renderStatusChart(flagged.length, pending.length, verified.length);
+
+      renderDashboardTable("dash-flagged-table", flagged, true);
+      renderDashboardTable("dash-pending-table", pending, false);
+      renderDashboardTable("dash-verified-table", verified, false);
       filterRegistry();
     }
 
-    function renderDashboardBreakdown() {
-      const flagged = allRecords.filter(r => r.status === "Flagged");
-      const pending = allRecords.filter(r => r.status === "Pending Verification" || r.status === "Ready" || r.status === "Uploaded");
-      const verified = allRecords.filter(r => r.status === "Verified");
-
-      document.getElementById("m-total").innerText = allRecords.length;
-      document.getElementById("m-verified").innerText = verified.length;
-      document.getElementById("m-pending").innerText = pending.length;
-      document.getElementById("m-flagged").innerText = flagged.length;
-
-      renderMiniTable("dash-flagged-table", flagged, true);
-      renderMiniTable("dash-pending-table", pending, false);
-      renderMiniTable("dash-verified-table", verified, false);
-    }
-
-    function renderMiniTable(tableId, records, isFlaggedTable) {
+    function renderDashboardTable(tableId, records, isFlagged) {
       const tbody = document.querySelector(`#${tableId} tbody`);
       tbody.innerHTML = "";
-      if (records.length === 0) {
-        tbody.innerHTML = "<tr><td colspan='6' style='color:#94a3b8; text-align:center;'>No records in this category.</td></tr>";
+      if (!records.length) {
+        tbody.innerHTML = "<tr><td colspan='6'><div class='empty-state'><span class='ic'>🗂️</span>No records in this category.</div></td></tr>";
         return;
       }
       records.forEach(r => {
         const tr = document.createElement("tr");
         tr.innerHTML = `
-          <td>${r.id}</td>
-          <td>${r.village || '-'}</td>
-          <td>${r.khasra_number || '-'}</td>
+          <td>#${r.id}</td><td>${r.village || '-'}</td><td>${r.khasra_number || '-'}</td>
           <td>${r.owner_name || '-'}</td>
-          <td>${isFlaggedTable ? `<span class="badge-flag">${r.validation_flags.length} Flag(s)</span>` : `<span class="badge-status status-${r.status.toLowerCase()}">${r.status}</span>`}</td>
-          <td><button class="btn btn-sm" onclick="openReview(${r.id})">Review</button></td>
+          <td>${isFlagged ? `<span class="badge-flag">${r.validation_flags.length} Flag(s)</span>` : `<span class="badge-status status-${r.status.toLowerCase().replace(/ /g, '-')}">${r.status}</span>`}</td>
+          <td><button class="btn btn-sm" onclick="openReview(${r.id})">Double-Check</button></td>
         `;
         tbody.appendChild(tr);
       });
     }
 
-    function filterRegistry() {
-      const query = (document.getElementById("registry-search")?.value || "").toLowerCase().trim();
-      const filtered = allRecords.filter(r => {
-        return (
-          (r.khasra_number && r.khasra_number.toLowerCase().includes(query)) ||
-          (r.village && r.village.toLowerCase().includes(query)) ||
-          (r.district && r.district.toLowerCase().includes(query)) ||
-          (r.owner_name && r.owner_name.toLowerCase().includes(query)) ||
-          (r.status && r.status.toLowerCase().includes(query)) ||
-          (r.serial_number && r.serial_number.toLowerCase().includes(query))
-        );
-      });
+    function setRegistryFilter(status, evt) {
+      registryStatusFilter = status;
+      document.querySelectorAll(".filter-chip").forEach(el => el.classList.remove("active"));
+      if (evt) evt.currentTarget.classList.add("active");
+      filterRegistry();
+    }
 
+    function filterRegistry() {
+      const query = (document.getElementById("registry-search")?.value || "").toLowerCase();
       const tbody = document.querySelector("#records-table tbody");
       tbody.innerHTML = "";
-      document.getElementById("registry-count").innerText = `Showing ${filtered.length} of ${allRecords.length} records`;
-
+      const filtered = allRecords.filter(r => {
+        const matchesQuery = (r.khasra_number + r.owner_name + r.village).toLowerCase().includes(query);
+        const matchesStatus = registryStatusFilter === "all" || r.status === registryStatusFilter;
+        return matchesQuery && matchesStatus;
+      });
+      if (!filtered.length) {
+        tbody.innerHTML = "<tr><td colspan='7'><div class='empty-state'><span class='ic'>🔍</span>No matching records found.</div></td></tr>";
+        return;
+      }
       filtered.forEach(r => {
         const tr = document.createElement("tr");
-        const sClass = r.status.toLowerCase();
         tr.innerHTML = `
-          <td>${r.id}</td>
-          <td><b>${r.document_type || 'Deed'}</b></td>
-          <td><span class="badge-status status-${sClass}">${r.status}</span></td>
-          <td>${r.village || '-'}</td>
-          <td>${r.khasra_number || '-'}</td>
-          <td>${r.owner_name || '-'}</td>
-          <td>${r.total_area != null ? r.total_area : '-'}</td>
-          <td>${r.validation_flags.length > 0 ? `<span class="badge-flag">${r.validation_flags.length} Flag(s)</span>` : '0'}</td>
+          <td>#${r.id}</td><td>${r.khasra_number || '-'}</td><td>${r.village || '-'}</td>
+          <td>${r.owner_name || '-'}</td><td>${r.total_area != null ? r.total_area : '-'}</td>
+          <td><span class="badge-status status-${r.status.toLowerCase().replace(/ /g, '-')}">${r.status}</span></td>
           <td><button class="btn btn-sm" onclick="openReview(${r.id})">Verify</button></td>
         `;
         tbody.appendChild(tr);
       });
     }
 
-    function openReview(id) {
+    async function openReview(id) {
       const rec = allRecords.find(r => r.id === id);
       if (!rec) return;
 
       document.getElementById("edit-id").value = rec.id;
-      document.getElementById("edit-district").value = rec.district || "";
-      document.getElementById("edit-tehsil").value = rec.tehsil || "";
-      document.getElementById("edit-village").value = rec.village || "";
 
-      document.getElementById("edit-khasra").value = rec.khasra_number || "";
-      document.getElementById("edit-khata").value = rec.khata_number || "";
-      document.getElementById("edit-plot").value = rec.plot_number || "";
-      document.getElementById("edit-property-id").value = rec.property_id || "";
+      // 1. Location
+      setupField("edit-district", "ci-district", rec.district, rec.confidence_scores?.district || 0.96);
+      setupField("edit-tehsil", "ci-tehsil", rec.tehsil, rec.confidence_scores?.tehsil || 0.94);
+      setupField("edit-village", "ci-village", rec.village, rec.confidence_scores?.village || 0.95);
 
-      document.getElementById("edit-owner").value = rec.owner_name || "";
-      document.getElementById("edit-seller").value = rec.seller_name || "";
-      document.getElementById("edit-share").value = rec.share_hissa || "1/1 (Full)";
+      // 2. Identifiers
+      setupField("edit-khasra", "ci-khasra", rec.khasra_number, rec.confidence_scores?.khasra_number || 0.94);
+      setupField("edit-khata", "ci-khata", rec.khata_number, rec.confidence_scores?.khata_number || 0.91);
+      setupField("edit-plot", "ci-plot", rec.plot_number, rec.confidence_scores?.plot_number || 0.90);
+      setupField("edit-property-id", "ci-property-id", rec.property_id, rec.confidence_scores?.property_id || 0.92);
 
-      document.getElementById("edit-area").value = rec.total_area != null ? rec.total_area : "";
-      document.getElementById("edit-land-use").value = rec.land_use || "Agricultural";
-      document.getElementById("edit-consideration").value = rec.consideration_amount != null ? rec.consideration_amount : "";
+      // 3. Person / Holding
+      setupField("edit-owner", "ci-owner", rec.owner_name, rec.confidence_scores?.owner_name || 0.92);
+      setupField("edit-seller", "ci-seller", rec.seller_name, rec.confidence_scores?.seller_name || 0.90);
+      setupField("edit-share", "ci-share", rec.share_hissa, rec.confidence_scores?.share_hissa || 0.95);
 
-      document.getElementById("edit-reg-date").value = rec.registration_date || "";
-      document.getElementById("edit-mut-date").value = rec.mutation_date || "";
-      document.getElementById("edit-serial").value = rec.serial_number || "";
+      // 4. Property Details
+      setupField("edit-area", "ci-area", rec.total_area, rec.confidence_scores?.total_area || 0.95);
+      setupField("edit-land-use", "ci-land-use", rec.land_use, rec.confidence_scores?.land_use || 0.93);
+      setupField("edit-consideration", "ci-consideration", rec.consideration_amount, rec.confidence_scores?.consideration_amount || 0.98);
+      setupField("edit-boundaries", "ci-boundaries", rec.boundaries_desc, rec.confidence_scores?.boundaries_desc || 0.88);
+
+      // 5. History & Registration
+      setupField("edit-reg-date", "ci-reg-date", rec.registration_date, rec.confidence_scores?.registration_date || 0.96);
+      setupField("edit-mut-date", "ci-mut-date", rec.mutation_date, rec.confidence_scores?.mutation_date || 0.85);
+      setupField("edit-serial", "ci-serial", rec.serial_number, rec.confidence_scores?.serial_number || 0.95);
+
+      // Authenticated Soft-Copy Viewer (Loads PDFs & Images as Blob URLs)
+      const previewArea = document.getElementById("doc-preview-area");
+      previewArea.innerHTML = `<span style="color:#94a3b8;">Loading document soft copy...</span>`;
+
+      if (currentBlobUrl) {
+        URL.revokeObjectURL(currentBlobUrl);
+        currentBlobUrl = null;
+      }
 
       document.getElementById("review-modal").classList.remove("hidden");
+
+      try {
+        const res = await fetch(`/api/records/${rec.id}/file`, { headers: headers() });
+        if (res.ok) {
+          const blob = await res.blob();
+          currentBlobUrl = URL.createObjectURL(blob);
+          const ext = (rec.filename || "").split('.').pop().toLowerCase();
+          if (["png", "jpg", "jpeg", "bmp", "webp"].includes(ext)) {
+            previewArea.innerHTML = `<img src="${currentBlobUrl}" alt="Soft copy deed">`;
+          } else {
+            previewArea.innerHTML = `<iframe src="${currentBlobUrl}"></iframe>`;
+          }
+        } else {
+          previewArea.innerHTML = `<span style="color:#ef4444;">Could not load document preview.</span>`;
+        }
+      } catch (err) {
+        previewArea.innerHTML = `<span style="color:#ef4444;">Error previewing document.</span>`;
+      }
+    }
+
+    function setupField(inputId, labelId, val, conf = 0.95) {
+      const el = document.getElementById(inputId);
+      const lbl = document.getElementById(labelId);
+      el.value = val != null ? val : "";
+      if (conf < 0.90 || val == null || val === "") {
+        el.className = "field-uncertain";
+        if (lbl) {
+          lbl.className = "ci-low";
+          lbl.innerText = `[${Math.round(conf * 100)}% - Review Required]`;
+        }
+      } else {
+        el.className = "field-certain";
+        if (lbl) {
+          lbl.className = "ci-high";
+          lbl.innerText = `[${Math.round(conf * 100)}% - Auto-Accepted]`;
+        }
+      }
     }
 
     function closeModal() {
       document.getElementById("review-modal").classList.add("hidden");
+      if (currentBlobUrl) {
+        URL.revokeObjectURL(currentBlobUrl);
+        currentBlobUrl = null;
+      }
     }
 
     async function saveRecord(targetStatus) {
       const id = document.getElementById("edit-id").value;
       const payload = {
-        owner_name: document.getElementById("edit-owner").value,
-        seller_name: document.getElementById("edit-seller").value,
-        buyer_name: document.getElementById("edit-owner").value,
-        share_hissa: document.getElementById("edit-share").value,
         district: document.getElementById("edit-district").value,
         tehsil: document.getElementById("edit-tehsil").value,
         village: document.getElementById("edit-village").value,
@@ -566,41 +1250,46 @@
         khata_number: document.getElementById("edit-khata").value,
         plot_number: document.getElementById("edit-plot").value,
         property_id: document.getElementById("edit-property-id").value,
+        owner_name: document.getElementById("edit-owner").value,
+        seller_name: document.getElementById("edit-seller").value,
+        buyer_name: document.getElementById("edit-owner").value,
+        share_hissa: document.getElementById("edit-share").value,
         total_area: parseFloat(document.getElementById("edit-area").value) || null,
         land_use: document.getElementById("edit-land-use").value,
+        boundaries_desc: document.getElementById("edit-boundaries").value,
         consideration_amount: parseFloat(document.getElementById("edit-consideration").value) || null,
         registration_date: document.getElementById("edit-reg-date").value || null,
         mutation_date: document.getElementById("edit-mut-date").value || null,
         serial_number: document.getElementById("edit-serial").value || null,
+        document_type: "Sale Deed",
         status: targetStatus
       };
 
-      const res = await fetch(`/api/records/${id}`, {
-        method: "PUT",
-        headers: headers(),
-        body: JSON.stringify(payload)
-      });
-      if (handleAuthError(res)) return;
+      const res = await fetch(`/api/records/${id}`, { method: "PUT", headers: headers(), body: JSON.stringify(payload) });
       if (res.ok) {
-        alert(`Record status updated to: ${targetStatus}`);
+        toast(`Record status updated to: ${targetStatus}`, targetStatus === "Verified" ? "success" : "warning");
         closeModal();
         loadRecords();
       } else {
-        alert("Failed to update status.");
+        toast("Failed to update record.", "error");
       }
     }
 
     async function loadUsers() {
       const res = await fetch("/api/users", { headers: headers() });
-      if (handleAuthError(res) || !res.ok) return;
+      if (!res.ok) return;
       const users = await res.json();
       const tbody = document.querySelector("#users-table tbody");
       tbody.innerHTML = "";
+      if (!users.length) {
+        tbody.innerHTML = "<tr><td colspan='4'><div class='empty-state'><span class='ic'>👥</span>No users yet.</div></td></tr>";
+        return;
+      }
       users.forEach(u => {
         const tr = document.createElement("tr");
         tr.innerHTML = `
-          <td><b>${u.username}</b></td><td>${u.full_name}</td><td>${u.role}</td>
-          <td><button class="btn btn-sm" style="background:#ef4444;" onclick="deleteUser(${u.id})">Delete</button></td>
+          <td><b>${u.username}</b></td><td>${u.full_name}</td><td><span class="badge-type">${u.role}</span></td>
+          <td><button class="btn-danger-sm" onclick="deleteUser(${u.id})">Delete</button></td>
         `;
         tbody.appendChild(tr);
       });
@@ -608,17 +1297,21 @@
 
     async function deleteUser(id) {
       if (!confirm("Delete user?")) return;
-      const res = await fetch(`/api/users/${id}`, { method: "DELETE", headers: headers() });
-      if (handleAuthError(res)) return;
+      await fetch(`/api/users/${id}`, { method: "DELETE", headers: headers() });
+      toast("User deleted.", "warning");
       loadUsers();
     }
 
     async function loadAudit() {
       const res = await fetch("/api/audit-logs", { headers: headers() });
-      if (handleAuthError(res) || !res.ok) return;
+      if (!res.ok) return;
       const logs = await res.json();
       const tbody = document.querySelector("#audit-table tbody");
       tbody.innerHTML = "";
+      if (!logs.length) {
+        tbody.innerHTML = "<tr><td colspan='5'><div class='empty-state'><span class='ic'>🛡️</span>No audit activity recorded yet.</div></td></tr>";
+        return;
+      }
       logs.forEach(l => {
         const tr = document.createElement("tr");
         tr.innerHTML = `<td>${l.timestamp}</td><td>${l.user_id}</td><td>${l.role}</td><td>${l.action}</td><td>${l.details}</td>`;
