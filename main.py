@@ -7,7 +7,7 @@ import hashlib
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 
-from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File
+from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Query
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -44,12 +44,6 @@ try:
 except ImportError:
     PDF_TEXT_AVAILABLE = False
 
-try:
-    from pdf2image import convert_from_bytes
-    PDF_IMAGE_AVAILABLE = True
-except ImportError:
-    PDF_IMAGE_AVAILABLE = False
-
 SECRET_KEY = "bharat-vault-secure-token-secret-key-2026"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7
@@ -57,9 +51,9 @@ UPLOAD_DIR = "uploads"
 DB_FILE = "terra_digitize.db"
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/token")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/token", auto_error=False)
 
-app = FastAPI(title="BharatVault API", version="5.0")
+app = FastAPI(title="BharatVault API", version="8.5")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -102,7 +96,7 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         filename TEXT NOT NULL,
         file_path TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'Uploaded',
+        status TEXT NOT NULL DEFAULT 'Pending Verification',
         raw_text TEXT,
         owner_name TEXT,
         seller_name TEXT,
@@ -116,6 +110,7 @@ def init_db():
         total_area REAL,
         sub_plot_areas TEXT,
         land_use TEXT,
+        boundaries_desc TEXT,
         village TEXT,
         tehsil TEXT,
         district TEXT,
@@ -125,6 +120,7 @@ def init_db():
         consideration_amount REAL,
         confidence_scores TEXT,
         validation_flags TEXT,
+        document_type TEXT,
         uploaded_by TEXT,
         ocr_quality REAL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -152,27 +148,7 @@ def init_db():
         conn.commit()
     conn.close()
 
-def migrate_db():
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute("PRAGMA table_info(records)")
-    existing_cols = {row[1] for row in cursor.fetchall()}
-
-    new_columns = {
-        "share_hissa": "TEXT",
-        "plot_number": "TEXT",
-        "property_id": "TEXT",
-        "land_use": "TEXT",
-        "document_type": "TEXT"
-    }
-    for col, col_type in new_columns.items():
-        if col not in existing_cols:
-            cursor.execute(f"ALTER TABLE records ADD COLUMN {col} {col_type}")
-    conn.commit()
-    conn.close()
-
 init_db()
-migrate_db()
 
 def log_action(conn: sqlite3.Connection, username: str, role: str, action: str, details: str = ""):
     conn.execute(
@@ -187,14 +163,21 @@ def create_access_token(data: dict):
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
-def get_current_user(token: str = Depends(oauth2_scheme), conn: sqlite3.Connection = Depends(get_db)):
+def get_current_user(
+    token: Optional[str] = Depends(oauth2_scheme),
+    token_query: Optional[str] = Query(None, alias="token"),
+    conn: sqlite3.Connection = Depends(get_db)
+):
+    actual_token = token or token_query
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Session invalid or expired",
         headers={"WWW-Authenticate": "Bearer"},
     )
+    if not actual_token:
+        raise credentials_exception
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(actual_token, SECRET_KEY, algorithms=[ALGORITHM])
         username: str = payload.get("sub")
         role: str = payload.get("role")
         if username is None or role is None:
@@ -206,6 +189,8 @@ def get_current_user(token: str = Depends(oauth2_scheme), conn: sqlite3.Connecti
     if user is None:
         raise credentials_exception
     return {"username": user["username"], "full_name": user["full_name"], "role": user["role"], "id": user["id"]}
+
+# ----------------- OCR & Preprocessing -----------------
 
 def preprocess_image_for_ocr(image_bytes: bytes) -> Image.Image:
     if not CV2_AVAILABLE:
@@ -228,37 +213,21 @@ def preprocess_image_for_ocr(image_bytes: bytes) -> Image.Image:
 def run_ocr(file_content: bytes, filename: str) -> (str, float):
     ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
     text = ""
-    quality = 0.85
+    quality = 0.90
+
+    # If uploading text file, read directly without dummy replacement
+    if ext == "txt":
+        return file_content.decode("utf-8", errors="ignore").strip(), 1.0
 
     if ext in ("png", "jpg", "jpeg", "bmp", "tiff", "tif"):
-        tesseract_worked = False
         if OCR_AVAILABLE:
             try:
                 processed_pil = preprocess_image_for_ocr(file_content)
                 text = pytesseract.image_to_string(processed_pil, lang="eng", config=r"--oem 3 --psm 6")
                 if len(text.strip()) < 50:
                     text = pytesseract.image_to_string(processed_pil, lang="eng")
-                tesseract_worked = bool(text.strip())
             except Exception:
-                tesseract_worked = False
-
-        if not tesseract_worked:
-            text = (
-                "GOVERNMENT OF INDIA\n"
-                "INDIAN NON-JUDICIAL STAMP PAPER\n"
-                "SERIAL NO. 193823829-100\n"
-                "DATE: 19 SEP 2026\n"
-                "DUMMY SALE DEED - FOR PROJECT PRESENTATION ONLY\n"
-                "VENDOR (Seller): LATE SHRI RAM CHANDRA YADAV, S/O LATE MOHAN LAL, Aged 56, R/o Village Chomu, Jaipur.\n"
-                "VENDEE (Buyer): SHRI MUKESH YADAV, S/O SHRI RAMESH YADAV, Aged 32, R/o Village Amer, Jaipur.\n"
-                "SECTION 2 (SUBJECT MATTER): This Deed of Sale is executed on 19-09-2026 at Jaipur.\n"
-                "SECTION 3 (CONSIDERATION): Consideration: Rs. 18,50,000/-.\n"
-                "Total Area: 4.5 bigha\n"
-                "Khasra No: 402/1\n"
-                "Khata No: KH-12\n"
-                "Land Use: Agricultural\n"
-            )
-            quality = 0.90
+                text = ""
 
     elif ext == "pdf":
         if PDF_TEXT_AVAILABLE:
@@ -267,25 +236,13 @@ def run_ocr(file_content: bytes, filename: str) -> (str, float):
                 text = "\n".join((page.extract_text() or "") for page in reader.pages)
             except Exception:
                 text = ""
-        if not text.strip() and PDF_IMAGE_AVAILABLE and OCR_AVAILABLE:
-            try:
-                images = convert_from_bytes(file_content)
-                text = "\n".join([pytesseract.image_to_string(img, lang="eng") for img in images])
-            except Exception:
-                pass
-        if not text.strip():
-            text = "Scanned PDF Record\nSale Deed executed on 19-09-2026\nVillage Chomu, District Jaipur\nKhasra 402/1\nArea 4.5"
-
-    elif ext == "txt":
-        text = file_content.decode("utf-8", errors="ignore")
-        quality = 1.0
 
     return text.strip(), quality
 
 KNOWN_DISTRICTS = ["Jaipur", "Jodhpur", "Udaipur", "Kota", "Ajmer", "Alwar", "Bikaner", "Bharatpur", "Sikar", "Chomu", "Amer"]
 
 def clean_extracted_name(raw: str) -> str:
-    raw = re.sub(r"(?i)\b(s/o|d/o|w/o|aged|r/o|village|resident of|late)\b.*", "", raw)
+    raw = re.sub(r"(?i)\b(s/o|d/o|w/o|aged|r/o|village|resident of|late|son of|daughter of|wife of)\b.*", "", raw)
     return re.sub(r"[\.,;:_~]", " ", raw).strip().title()
 
 def normalize_date(raw: str) -> Optional[str]:
@@ -297,25 +254,26 @@ def normalize_date(raw: str) -> Optional[str]:
             continue
     return None
 
-def extract_fields_from_text(text: str):
+def extract_land_identity(text: str):
     result = {
         "document_type": "Sale Deed",
         "serial_number": None,
-        "seller_name": None,
-        "buyer_name": None,
-        "owner_name": None,
-        "share_hissa": "1/1 (Full)",
-        "village": None,
-        "tehsil": None,
         "district": None,
-        "survey_number": None,
+        "tehsil": None,
+        "village": None,
         "khasra_number": None,
         "khata_number": None,
         "plot_number": None,
         "property_id": None,
+        "survey_number": None,
+        "owner_name": None,
+        "seller_name": None,
+        "buyer_name": None,
+        "share_hissa": "1/1 (Full)",
         "total_area": None,
         "sub_plot_areas": [],
         "land_use": "Agricultural",
+        "boundaries_desc": None,
         "consideration_amount": None,
         "registration_date": None,
         "mutation_date": None,
@@ -331,12 +289,16 @@ def extract_fields_from_text(text: str):
     elif "PATTA" in upper:
         result["document_type"] = "Patta / Lease"
 
+    # Serial Number
     m = re.search(r"(?:SERIAL|STAMP)\s*(?:NO|N0|\.)?\s*[:\.\-]?\s*([A-Z0-9\-\/]+)", t, re.IGNORECASE)
     if m:
         result["serial_number"] = m.group(1).strip()
+        confidence["serial_number"] = 0.95
 
+    # Registration & Execution Dates
     date_patterns = [
-        r"executed\s+on\s+([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4})",
+        r"Registration\s*Date\s*[:\-]?\s*([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4})",
+        r"executed\s+on\s*[:\-]?\s*([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4})",
         r"DATE\s*[:\-]?\s*([0-9]{1,2}\s+[A-Za-z]{3,9}\s+[0-9]{4})",
         r"DATE\s*[:\-]?\s*([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4})",
     ]
@@ -346,52 +308,104 @@ def extract_fields_from_text(text: str):
             parsed_d = normalize_date(m.group(1))
             if parsed_d:
                 result["registration_date"] = parsed_d
+                confidence["registration_date"] = 0.96
                 break
 
-    m = re.search(r"(?:VENDOR|SELLER)\s*(?:\(Seller\))?\s*[:\-]?\s*([A-Za-z\s\.]+?)(?:,|\n|S\/O|D\/O|AGED|R\/O)", t, re.IGNORECASE)
+    # Mutation Date
+    m = re.search(r"Mutation\s*Date\s*[:\-]?\s*([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4})", t, re.IGNORECASE)
+    if m:
+        result["mutation_date"] = normalize_date(m.group(1))
+        confidence["mutation_date"] = 0.90
+
+    # Seller & Buyer
+    m = re.search(r"(?:VENDOR|SELLER)\s*(?:\(Seller\))?\s*[:\-]?\s*([A-Za-z\s\.]+?)(?:,|\n|S\/O|D\/O|AGED|R\/O|Son of|Wife of)", t, re.IGNORECASE)
     if m:
         result["seller_name"] = clean_extracted_name(m.group(1))
+        confidence["seller_name"] = 0.92
 
-    m = re.search(r"(?:VENDEE|BUYER|PURCHASER)\s*(?:\(Buyer\))?\s*[:\-]?\s*([A-Za-z\s\.]+?)(?:,|\n|S\/O|D\/O|AGED|R\/O)", t, re.IGNORECASE)
+    m = re.search(r"(?:VENDEE|BUYER|RECORDED\s*HOLDER|ALLOTTEE)\s*(?:\([^\)]+\))?\s*[:\-]?\s*([A-Za-z\s\.]+?)(?:,|\n|S\/O|D\/O|AGED|R\/O|Son of|Wife of)", t, re.IGNORECASE)
     if m:
         result["buyer_name"] = clean_extracted_name(m.group(1))
+        confidence["buyer_name"] = 0.93
 
     result["owner_name"] = result["buyer_name"] or result["seller_name"]
+    confidence["owner_name"] = confidence.get("buyer_name", 0.92)
 
-    m = re.search(r"(?:Village|Gram|R\/o\s+Village)\s+([A-Za-z]+)", t, re.IGNORECASE)
+    # Share / Hissa
+    m = re.search(r"(?:Share|Hissa)\s*[:\-]?\s*([0-9\/\sA-Za-z\(\)]+)", t, re.IGNORECASE)
+    if m:
+        result["share_hissa"] = m.group(1).strip()
+        confidence["share_hissa"] = 0.95
+
+    # Location
+    m = re.search(r"(?:District)\s*[:\-]?\s*([A-Za-z]+)", t, re.IGNORECASE)
+    if m:
+        result["district"] = m.group(1).strip().title()
+        confidence["district"] = 0.98
+
+    m = re.search(r"(?:Tehsil)\s*[:\-]?\s*([A-Za-z]+)", t, re.IGNORECASE)
+    if m:
+        result["tehsil"] = m.group(1).strip().title()
+        confidence["tehsil"] = 0.95
+
+    m = re.search(r"(?:Village|Locality|Urban Locality)\s*[:\-]?\s*([A-Za-z0-9\s]+?)(?:,|\n|$)", t, re.IGNORECASE)
     if m:
         result["village"] = m.group(1).strip().title()
+        confidence["village"] = 0.95
 
-    for district in KNOWN_DISTRICTS:
-        if re.search(rf"\b{re.escape(district)}\b", t, re.IGNORECASE):
-            result["district"] = district
-            result["tehsil"] = district
-            break
-
-    m = re.search(r"Khasra\s*(?:No\.?|Number)?\s*[:\-]?\s*([0-9\/\-]+)", t, re.IGNORECASE)
+    # Identifiers
+    m = re.search(r"Khasra\s*(?:No\.?|Number)?\s*[:\-]?\s*([0-9\/\-A-Za-z]+)", t, re.IGNORECASE)
     if m:
         result["khasra_number"] = m.group(1).strip()
+        confidence["khasra_number"] = 0.94
 
     m = re.search(r"Khata\s*(?:No\.?|Number)?\s*[:\-]?\s*([0-9A-Za-z\/\-]+)", t, re.IGNORECASE)
     if m:
         result["khata_number"] = m.group(1).strip()
+        confidence["khata_number"] = 0.91
 
-    m = re.search(r"(?:Plot|Property\s*ID)\s*(?:No\.?|Number)?\s*[:\-]?\s*([0-9A-Za-z\/\-]+)", t, re.IGNORECASE)
+    m = re.search(r"Plot\s*(?:No\.?|Number)?\s*[:\-]?\s*([0-9A-Za-z\/\-]+)", t, re.IGNORECASE)
     if m:
         result["plot_number"] = m.group(1).strip()
+        confidence["plot_number"] = 0.90
 
+    m = re.search(r"Property\s*ID\s*[:\-]?\s*([0-9A-Za-z\-\/_]+)", t, re.IGNORECASE)
+    if m:
+        result["property_id"] = m.group(1).strip()
+        confidence["property_id"] = 0.92
+
+    # Area & Sub-plots
     m = re.search(r"(?:Area|Total\s*Area)\s*[:\-]?\s*([0-9\.]+)\s*(?:bigha|acre|hectare|sq)?", t, re.IGNORECASE)
     if m:
         try:
             result["total_area"] = float(m.group(1))
+            confidence["total_area"] = 0.95
         except ValueError:
             pass
 
+    sub_matches = re.findall(r"Sub-plot\s*[A-Za-z0-9]*\s*=\s*([0-9\.]+)", t, re.IGNORECASE)
+    if sub_matches:
+        result["sub_plot_areas"] = [float(x) for x in sub_matches]
+
+    # Land use
+    m = re.search(r"Land\s*Use(?:\s*[\/\(A-Za-z\)]*)?\s*[:\-]?\s*([A-Za-z\s\(\)]+?)(?:,|\n|$)", t, re.IGNORECASE)
+    if m:
+        result["land_use"] = m.group(1).strip().title()
+        confidence["land_use"] = 0.93
+
+    # Boundaries
+    m = re.search(r"Boundaries\s*[:\-]?\s*([^\n\r]+)", t, re.IGNORECASE)
+    if m:
+        result["boundaries_desc"] = m.group(1).strip()
+        confidence["boundaries_desc"] = 0.90
+
+    # Consideration amount
     m = re.search(r"(?:Consideration|Amount|Sale\s+Value|Price)\s*[:\-]?\s*(?:Rs\.?|INR)?\s*([0-9,]+(?:\.[0-9]{2})?)", t, re.IGNORECASE)
     if m:
         try:
             val_str = m.group(1).replace(",", "").strip()
             result["consideration_amount"] = float(val_str)
+            confidence["consideration_amount"] = 0.98
         except ValueError:
             pass
 
@@ -399,6 +413,8 @@ def extract_fields_from_text(text: str):
 
 def run_validation_rules(data: dict, conn: sqlite3.Connection, current_record_id: Optional[int] = None) -> List[str]:
     flags = []
+
+    # Rule 1: Chronological Order (Mutation cannot precede Registration)
     reg_date_str = data.get("registration_date")
     mut_date_str = data.get("mutation_date")
     if reg_date_str and mut_date_str:
@@ -406,10 +422,23 @@ def run_validation_rules(data: dict, conn: sqlite3.Connection, current_record_id
             reg_d = datetime.strptime(reg_date_str, "%Y-%m-%d")
             mut_d = datetime.strptime(mut_date_str, "%Y-%m-%d")
             if mut_d < reg_d:
-                flags.append(f"Date Anomaly: Mutation ({mut_date_str}) precedes registration ({reg_date_str})")
+                flags.append(f"Timeline Anomaly: Mutation date ({mut_date_str}) precedes registration date ({reg_date_str})")
         except ValueError:
             pass
 
+    # Rule 2: Sub-plot Sum Reconciliation
+    total_area = data.get("total_area")
+    sub_plots = data.get("sub_plot_areas") or []
+    if total_area is not None and len(sub_plots) > 0:
+        sub_sum = round(sum(sub_plots), 2)
+        if round(float(total_area), 2) != sub_sum:
+            flags.append(f"Area Sum Mismatch: Total area ({total_area} Bigha) != sum of sub-plots ({sub_sum} Bigha)")
+
+    # Rule 3: Missing Mandatory Location Identifier
+    if not data.get("district"):
+        flags.append("Missing Mandatory Location Identifier: 'District' is unassigned")
+
+    # Rule 4: Duplicate Stamp Serial Check (colliding only against OTHER records)
     serial = data.get("serial_number")
     if serial:
         query = "SELECT id FROM records WHERE serial_number = ?"
@@ -419,9 +448,11 @@ def run_validation_rules(data: dict, conn: sqlite3.Connection, current_record_id
             params.append(current_record_id)
         dup = conn.execute(query, params).fetchall()
         if dup:
-            flags.append(f"Duplicate Document: Serial number '{serial}' already exists as record #{dup[0]['id']}.")
+            flags.append(f"Duplicate Serial Warning: Serial '{serial}' already registered under record #{dup[0]['id']}")
 
     return flags
+
+# ----------------- Core API Endpoints -----------------
 
 @app.post("/api/auth/token")
 def login(form_data: OAuth2PasswordRequestForm = Depends(), conn: sqlite3.Connection = Depends(get_db)):
@@ -430,7 +461,7 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), conn: sqlite3.Connec
         raise HTTPException(status_code=400, detail="Invalid username or password")
 
     token = create_access_token({"sub": user["username"], "role": user["role"]})
-    log_action(conn, user["username"], user["role"], "LOGIN", "User authenticated successfully")
+    log_action(conn, user["username"], user["role"], "LOGIN", "User logged in")
     return {
         "access_token": token,
         "token_type": "bearer",
@@ -456,22 +487,25 @@ async def upload_documents(
             f.write(contents)
 
         raw_text, ocr_quality = run_ocr(contents, file.filename)
-        extracted, field_confidence = extract_fields_from_text(raw_text)
+        extracted, field_confidence = extract_land_identity(raw_text)
         flags = run_validation_rules(extracted, conn)
+
+        # Automatic Classification: Genuine documents with 0 flags are auto-verified
+        auto_status = "Verified" if len(flags) == 0 else "Flagged"
 
         cursor = conn.cursor()
         cursor.execute("""
             INSERT INTO records (
                 filename, file_path, status, raw_text, owner_name, seller_name, buyer_name,
                 share_hissa, document_type, serial_number, survey_number, khasra_number, khata_number,
-                plot_number, property_id, total_area, sub_plot_areas, land_use, village, tehsil,
-                district, consideration_amount, registration_date, mutation_date, confidence_scores,
-                validation_flags, uploaded_by, ocr_quality
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                plot_number, property_id, total_area, sub_plot_areas, land_use, boundaries_desc,
+                village, tehsil, district, consideration_amount, registration_date, mutation_date,
+                confidence_scores, validation_flags, uploaded_by, ocr_quality
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             file.filename,
             file_location,
-            "Flagged" if flags else "Ready",
+            auto_status,
             raw_text,
             extracted["owner_name"],
             extracted["seller_name"],
@@ -487,6 +521,7 @@ async def upload_documents(
             extracted["total_area"],
             json.dumps(extracted["sub_plot_areas"]),
             extracted["land_use"],
+            extracted["boundaries_desc"],
             extracted["village"],
             extracted["tehsil"],
             extracted["district"],
@@ -501,8 +536,8 @@ async def upload_documents(
         record_id = cursor.lastrowid
         conn.commit()
 
-        log_action(conn, current_user["username"], current_user["role"], "UPLOAD", f"Uploaded record #{record_id} ({file.filename})")
-        processed.append({"id": record_id, "filename": file.filename, "document_type": extracted["document_type"], "flags_count": len(flags)})
+        log_action(conn, current_user["username"], current_user["role"], "UPLOAD", f"Ingested record #{record_id} ({file.filename}) - Result: {auto_status}")
+        processed.append({"id": record_id, "filename": file.filename, "status": auto_status, "flags": flags})
 
     return {"message": f"Processed {len(processed)} document(s)", "records": processed}
 
@@ -515,6 +550,7 @@ def list_records(current_user: dict = Depends(get_current_user), conn: sqlite3.C
     for r in records:
         rec = dict(r)
         rec["validation_flags"] = json.loads(rec["validation_flags"]) if rec["validation_flags"] else []
+        rec["confidence_scores"] = json.loads(rec["confidence_scores"]) if rec["confidence_scores"] else {}
         if role == "Clerk":
             rec["owner_name"] = "[RESTRICTED - OFFICER ONLY]"
             rec["seller_name"] = "[RESTRICTED]"
@@ -529,36 +565,40 @@ def list_records(current_user: dict = Depends(get_current_user), conn: sqlite3.C
     return sanitized
 
 @app.get("/api/records/{record_id}/file")
-def get_record_file(record_id: int, current_user: dict = Depends(get_current_user), conn: sqlite3.Connection = Depends(get_db)):
-    if current_user["role"] not in ("Admin", "Revenue Officer"):
-        raise HTTPException(status_code=403, detail="Unauthorized")
-    record = conn.execute("SELECT file_path, filename FROM records WHERE id = ?", (record_id,)).fetchone()
+def get_record_file(
+    record_id: int,
+    current_user: dict = Depends(get_current_user),
+    conn: sqlite3.Connection = Depends(get_db)
+):
+    record = conn.execute("SELECT file_path, filename FROM records WHERE id = ?", (record_id)).fetchone()
     if not record or not os.path.exists(record["file_path"]):
-        raise HTTPException(status_code=404, detail="File missing")
+        raise HTTPException(status_code=404, detail="File missing from storage")
     return FileResponse(record["file_path"], filename=record["filename"])
 
 class RecordUpdatePayload(BaseModel):
-    owner_name: str
-    seller_name: Optional[str] = None
-    buyer_name: Optional[str] = None
-    share_hissa: Optional[str] = None
-    district: str
+    district: Optional[str] = None
     tehsil: Optional[str] = None
-    village: str
+    village: Optional[str] = None
     khasra_number: Optional[str] = None
     khata_number: Optional[str] = None
     plot_number: Optional[str] = None
     property_id: Optional[str] = None
+    owner_name: str
+    seller_name: Optional[str] = None
+    buyer_name: Optional[str] = None
+    share_hissa: Optional[str] = None
     total_area: Optional[float] = None
     land_use: Optional[str] = None
+    boundaries_desc: Optional[str] = None
     consideration_amount: Optional[float] = None
     registration_date: Optional[str] = None
     mutation_date: Optional[str] = None
     serial_number: Optional[str] = None
+    document_type: Optional[str] = None
     status: str
 
 @app.put("/api/records/{record_id}")
-def update_and_verify_record(
+def update_record(
     record_id: int,
     payload: RecordUpdatePayload,
     current_user: dict = Depends(get_current_user),
@@ -567,26 +607,18 @@ def update_and_verify_record(
     if current_user["role"] not in ["Admin", "Revenue Officer"]:
         raise HTTPException(status_code=403, detail="Permission denied")
 
-    existing = conn.execute("SELECT * FROM records WHERE id = ?", (record_id,)).fetchone()
-    if not existing:
-        raise HTTPException(status_code=404, detail="Record not found")
-
     flags = run_validation_rules(payload.dict(), conn, current_record_id=record_id)
-    final_status = payload.status  # Uses the exact status requested by officer (e.g. Verified)
+    final_status = payload.status
 
     conn.execute("""
         UPDATE records SET
-            owner_name = ?, seller_name = ?, buyer_name = ?, share_hissa = ?,
             district = ?, tehsil = ?, village = ?, khasra_number = ?, khata_number = ?,
-            plot_number = ?, property_id = ?, total_area = ?, land_use = ?,
-            consideration_amount = ?, registration_date = ?, mutation_date = ?,
-            serial_number = ?, status = ?, validation_flags = ?
+            plot_number = ?, property_id = ?, owner_name = ?, seller_name = ?, buyer_name = ?,
+            share_hissa = ?, total_area = ?, land_use = ?, boundaries_desc = ?,
+            consideration_amount = ?, registration_date = ?, mutation_date = ?, serial_number = ?,
+            document_type = ?, status = ?, validation_flags = ?
         WHERE id = ?
     """, (
-        payload.owner_name,
-        payload.seller_name,
-        payload.buyer_name,
-        payload.share_hissa,
         payload.district,
         payload.tehsil,
         payload.village,
@@ -594,19 +626,25 @@ def update_and_verify_record(
         payload.khata_number,
         payload.plot_number,
         payload.property_id,
+        payload.owner_name,
+        payload.seller_name,
+        payload.buyer_name,
+        payload.share_hissa,
         payload.total_area,
         payload.land_use,
+        payload.boundaries_desc,
         payload.consideration_amount,
         payload.registration_date,
         payload.mutation_date,
         payload.serial_number,
+        payload.document_type or "Sale Deed",
         final_status,
         json.dumps([] if final_status == "Verified" else flags),
         record_id
     ))
     conn.commit()
-    log_action(conn, current_user["username"], current_user["role"], "VERIFY/UPDATE", f"Updated record #{record_id} to status: {final_status}")
-    return {"message": "Updated successfully", "status": final_status}
+    log_action(conn, current_user["username"], current_user["role"], "VERIFY/UPDATE", f"Record #{record_id} saved as {final_status}")
+    return {"message": "Record saved successfully", "status": final_status}
 
 class CreateUserPayload(BaseModel):
     username: str
@@ -617,7 +655,7 @@ class CreateUserPayload(BaseModel):
 @app.post("/api/users")
 def create_new_user(payload: CreateUserPayload, current_user: dict = Depends(get_current_user), conn: sqlite3.Connection = Depends(get_db)):
     if current_user["role"] != "Admin":
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail="Access denied. Admins only.")
     existing = conn.execute("SELECT id FROM users WHERE username = ?", (payload.username,)).fetchone()
     if existing:
         raise HTTPException(status_code=400, detail="Username already exists")
@@ -626,35 +664,29 @@ def create_new_user(payload: CreateUserPayload, current_user: dict = Depends(get
         (payload.username.strip(), payload.full_name.strip(), hash_password(payload.password), payload.role)
     )
     conn.commit()
-    return {"message": "Created"}
+    log_action(conn, current_user["username"], current_user["role"], "USER_CREATE", f"Created user '{payload.username}' ({payload.role})")
+    return {"message": "User registered successfully"}
 
 @app.get("/api/users")
 def list_users(current_user: dict = Depends(get_current_user), conn: sqlite3.Connection = Depends(get_db)):
     if current_user["role"] != "Admin":
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail="Access denied.")
     return [dict(u) for u in conn.execute("SELECT id, username, full_name, role, created_at FROM users ORDER BY id DESC").fetchall()]
 
 @app.delete("/api/users/{user_id}")
 def delete_user(user_id: int, current_user: dict = Depends(get_current_user), conn: sqlite3.Connection = Depends(get_db)):
     if current_user["role"] != "Admin":
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail="Access denied.")
     conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
     conn.commit()
-    return {"message": "Deleted"}
-
-@app.get("/api/dashboard/metrics")
-def get_metrics(current_user: dict = Depends(get_current_user), conn: sqlite3.Connection = Depends(get_db)):
-    total = conn.execute("SELECT COUNT(*) FROM records").fetchone()[0]
-    verified = conn.execute("SELECT COUNT(*) FROM records WHERE status = 'Verified'").fetchone()[0]
-    pending = conn.execute("SELECT COUNT(*) FROM records WHERE status = 'Pending Verification' OR status = 'Uploaded' OR status = 'Ready'").fetchone()[0]
-    flagged = conn.execute("SELECT COUNT(*) FROM records WHERE status = 'Flagged'").fetchone()[0]
-    return {"total_documents": total, "verified_count": verified, "pending_count": pending, "flagged_count": flagged}
+    log_action(conn, current_user["username"], current_user["role"], "USER_DELETE", f"Deleted user ID {user_id}")
+    return {"message": "User deleted"}
 
 @app.get("/api/audit-logs")
 def get_audit_logs(current_user: dict = Depends(get_current_user), conn: sqlite3.Connection = Depends(get_db)):
     if current_user["role"] != "Admin":
-        raise HTTPException(status_code=403, detail="Access denied")
-    return [dict(row) for row in conn.execute("SELECT * FROM audit_logs ORDER BY id DESC LIMIT 50").fetchall()]
+        raise HTTPException(status_code=403, detail="Access denied.")
+    return [dict(row) for row in conn.execute("SELECT * FROM audit_logs ORDER BY id DESC LIMIT 100").fetchall()]
 
 @app.get("/")
 def serve_frontend():
