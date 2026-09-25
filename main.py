@@ -10,7 +10,7 @@ from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Query
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 from jose import JWTError, jwt
 from pydantic import BaseModel
@@ -53,7 +53,7 @@ DB_FILE = "terra_digitize.db"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/token", auto_error=False)
 
-app = FastAPI(title="BharatVault API", version="8.5")
+app = FastAPI(title="BharatVault API", version="9.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -190,7 +190,7 @@ def get_current_user(
         raise credentials_exception
     return {"username": user["username"], "full_name": user["full_name"], "role": user["role"], "id": user["id"]}
 
-# ----------------- OCR & Preprocessing -----------------
+# ----------------- Robust Image Preprocessing & OCR -----------------
 
 def preprocess_image_for_ocr(image_bytes: bytes) -> Image.Image:
     if not CV2_AVAILABLE:
@@ -215,7 +215,6 @@ def run_ocr(file_content: bytes, filename: str) -> (str, float):
     text = ""
     quality = 0.90
 
-    # If uploading text file, read directly without dummy replacement
     if ext == "txt":
         return file_content.decode("utf-8", errors="ignore").strip(), 1.0
 
@@ -286,7 +285,7 @@ def extract_land_identity(text: str):
         result["document_type"] = "Khasra-Khatauni Record"
     elif "RECORD OF RIGHTS" in upper or re.search(r"\bROR\b", upper):
         result["document_type"] = "Record of Rights (RoR)"
-    elif "PATTA" in upper:
+    elif "PATTA" in upper or "LEASE" in upper:
         result["document_type"] = "Patta / Lease"
 
     # Serial Number
@@ -295,7 +294,7 @@ def extract_land_identity(text: str):
         result["serial_number"] = m.group(1).strip()
         confidence["serial_number"] = 0.95
 
-    # Registration & Execution Dates
+    # Dates
     date_patterns = [
         r"Registration\s*Date\s*[:\-]?\s*([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4})",
         r"executed\s+on\s*[:\-]?\s*([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4})",
@@ -311,19 +310,18 @@ def extract_land_identity(text: str):
                 confidence["registration_date"] = 0.96
                 break
 
-    # Mutation Date
     m = re.search(r"Mutation\s*Date\s*[:\-]?\s*([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4})", t, re.IGNORECASE)
     if m:
         result["mutation_date"] = normalize_date(m.group(1))
         confidence["mutation_date"] = 0.90
 
-    # Seller & Buyer
-    m = re.search(r"(?:VENDOR|SELLER)\s*(?:\(Seller\))?\s*[:\-]?\s*([A-Za-z\s\.]+?)(?:,|\n|S\/O|D\/O|AGED|R\/O|Son of|Wife of)", t, re.IGNORECASE)
+    # Seller & Buyer / Recorded Holder (supports VNDR / VNDEE shortcuts)
+    m = re.search(r"(?:VENDOR|SELLER|VNDR)\s*(?:\(Seller\))?\s*[:\-]?\s*([A-Za-z\s\.]+?)(?:,|\n|S\/O|D\/O|AGED|R\/O|Son of|Wife of)", t, re.IGNORECASE)
     if m:
         result["seller_name"] = clean_extracted_name(m.group(1))
         confidence["seller_name"] = 0.92
 
-    m = re.search(r"(?:VENDEE|BUYER|RECORDED\s*HOLDER|ALLOTTEE)\s*(?:\([^\)]+\))?\s*[:\-]?\s*([A-Za-z\s\.]+?)(?:,|\n|S\/O|D\/O|AGED|R\/O|Son of|Wife of)", t, re.IGNORECASE)
+    m = re.search(r"(?:VENDEE|BUYER|RECORDED\s*HOLDER|ALLOTTEE|VNDEE)\s*(?:\([^\)]+\))?\s*[:\-]?\s*([A-Za-z\s\.]+?)(?:,|\n|S\/O|D\/O|AGED|R\/O|Son of|Wife of)", t, re.IGNORECASE)
     if m:
         result["buyer_name"] = clean_extracted_name(m.group(1))
         confidence["buyer_name"] = 0.93
@@ -331,45 +329,54 @@ def extract_land_identity(text: str):
     result["owner_name"] = result["buyer_name"] or result["seller_name"]
     confidence["owner_name"] = confidence.get("buyer_name", 0.92)
 
-    # Share / Hissa
-    m = re.search(r"(?:Share|Hissa)\s*[:\-]?\s*([0-9\/\sA-Za-z\(\)]+)", t, re.IGNORECASE)
+    # Clean Share / Hissa - Stop at newline or next field to avoid "1/3 PartLand Id"
+    m = re.search(r"(?:Share|Hissa)\s*[:\-]?\s*([0-9\/\sA-Za-z\(\)]+?)(?=\n|\r|Land|Kh|Plot|Area|$)", t, re.IGNORECASE)
     if m:
-        result["share_hissa"] = m.group(1).strip()
+        val = m.group(1).strip()
+        result["share_hissa"] = val
         confidence["share_hissa"] = 0.95
 
-    # Location
-    m = re.search(r"(?:District)\s*[:\-]?\s*([A-Za-z]+)", t, re.IGNORECASE)
+    # Location (District, Tehsil, Village/Locality)
+    m = re.search(r"(?:District|Dist\.?)\s*[:\-]?\s*([A-Za-z]+)", t, re.IGNORECASE)
     if m:
         result["district"] = m.group(1).strip().title()
         confidence["district"] = 0.98
+    else:
+        for d in KNOWN_DISTRICTS:
+            if re.search(rf"\b{re.escape(d)}\b", t, re.IGNORECASE):
+                result["district"] = d
+                confidence["district"] = 0.92
+                break
 
-    m = re.search(r"(?:Tehsil)\s*[:\-]?\s*([A-Za-z]+)", t, re.IGNORECASE)
+    m = re.search(r"(?:Tehsil|Teh\.?)\s*[:\-]?\s*([A-Za-z]+)", t, re.IGNORECASE)
     if m:
         result["tehsil"] = m.group(1).strip().title()
         confidence["tehsil"] = 0.95
+    elif result["district"]:
+        result["tehsil"] = result["district"]
 
-    m = re.search(r"(?:Village|Locality|Urban Locality)\s*[:\-]?\s*([A-Za-z0-9\s]+?)(?:,|\n|$)", t, re.IGNORECASE)
+    m = re.search(r"(?:Village|Vill\.?|Locality|Urban Locality|Gram)\s*[:\-]?\s*([A-Za-z0-9\s]+?)(?:,|\n|$)", t, re.IGNORECASE)
     if m:
         result["village"] = m.group(1).strip().title()
         confidence["village"] = 0.95
 
-    # Identifiers
-    m = re.search(r"Khasra\s*(?:No\.?|Number)?\s*[:\-]?\s*([0-9\/\-A-Za-z]+)", t, re.IGNORECASE)
+    # Land Identifiers (supports Kh. No, Khata No, Plot No, Property ID)
+    m = re.search(r"(?:Khasra|Kh\.?\s*No\.?|Khasra\s*No\.?)\s*[:\-]?\s*([0-9\/\-A-Za-z]+)", t, re.IGNORECASE)
     if m:
         result["khasra_number"] = m.group(1).strip()
         confidence["khasra_number"] = 0.94
 
-    m = re.search(r"Khata\s*(?:No\.?|Number)?\s*[:\-]?\s*([0-9A-Za-z\/\-]+)", t, re.IGNORECASE)
+    m = re.search(r"(?:Khata|Khata\s*No\.?)\s*[:\-]?\s*([0-9A-Za-z\/\-]+)", t, re.IGNORECASE)
     if m:
         result["khata_number"] = m.group(1).strip()
         confidence["khata_number"] = 0.91
 
-    m = re.search(r"Plot\s*(?:No\.?|Number)?\s*[:\-]?\s*([0-9A-Za-z\/\-]+)", t, re.IGNORECASE)
+    m = re.search(r"(?:Plot|Plot\s*No\.?)\s*[:\-]?\s*([0-9A-Za-z\/\-]+)", t, re.IGNORECASE)
     if m:
         result["plot_number"] = m.group(1).strip()
         confidence["plot_number"] = 0.90
 
-    m = re.search(r"Property\s*ID\s*[:\-]?\s*([0-9A-Za-z\-\/_]+)", t, re.IGNORECASE)
+    m = re.search(r"(?:Property\s*ID)\s*[:\-]?\s*([0-9A-Za-z\-\/_]+)", t, re.IGNORECASE)
     if m:
         result["property_id"] = m.group(1).strip()
         confidence["property_id"] = 0.92
@@ -387,8 +394,8 @@ def extract_land_identity(text: str):
     if sub_matches:
         result["sub_plot_areas"] = [float(x) for x in sub_matches]
 
-    # Land use
-    m = re.search(r"Land\s*Use(?:\s*[\/\(A-Za-z\)]*)?\s*[:\-]?\s*([A-Za-z\s\(\)]+?)(?:,|\n|$)", t, re.IGNORECASE)
+    # Land Use
+    m = re.search(r"(?:Land\s*Use|Classification)\s*[:\-]?\s*([A-Za-z\s\(\)]+?)(?:,|\n|$)", t, re.IGNORECASE)
     if m:
         result["land_use"] = m.group(1).strip().title()
         confidence["land_use"] = 0.93
@@ -399,8 +406,8 @@ def extract_land_identity(text: str):
         result["boundaries_desc"] = m.group(1).strip()
         confidence["boundaries_desc"] = 0.90
 
-    # Consideration amount
-    m = re.search(r"(?:Consideration|Amount|Sale\s+Value|Price)\s*[:\-]?\s*(?:Rs\.?|INR)?\s*([0-9,]+(?:\.[0-9]{2})?)", t, re.IGNORECASE)
+    # Financial Consideration (supports Amt, Price, Consideration)
+    m = re.search(r"(?:Consideration|Amount|Sale\s+Value|Price|Amt)\s*[:\-]?\s*(?:Rs\.?|INR)?\s*([0-9,]+(?:\.[0-9]{2})?)", t, re.IGNORECASE)
     if m:
         try:
             val_str = m.group(1).replace(",", "").strip()
@@ -414,7 +421,7 @@ def extract_land_identity(text: str):
 def run_validation_rules(data: dict, conn: sqlite3.Connection, current_record_id: Optional[int] = None) -> List[str]:
     flags = []
 
-    # Rule 1: Chronological Order (Mutation cannot precede Registration)
+    # Rule 1: Chronological Order
     reg_date_str = data.get("registration_date")
     mut_date_str = data.get("mutation_date")
     if reg_date_str and mut_date_str:
@@ -438,7 +445,7 @@ def run_validation_rules(data: dict, conn: sqlite3.Connection, current_record_id
     if not data.get("district"):
         flags.append("Missing Mandatory Location Identifier: 'District' is unassigned")
 
-    # Rule 4: Duplicate Stamp Serial Check (colliding only against OTHER records)
+    # Rule 4: Duplicate Stamp Serial Check
     serial = data.get("serial_number")
     if serial:
         query = "SELECT id FROM records WHERE serial_number = ?"
@@ -490,7 +497,6 @@ async def upload_documents(
         extracted, field_confidence = extract_land_identity(raw_text)
         flags = run_validation_rules(extracted, conn)
 
-        # Automatic Classification: Genuine documents with 0 flags are auto-verified
         auto_status = "Verified" if len(flags) == 0 else "Flagged"
 
         cursor = conn.cursor()
@@ -536,7 +542,7 @@ async def upload_documents(
         record_id = cursor.lastrowid
         conn.commit()
 
-        log_action(conn, current_user["username"], current_user["role"], "UPLOAD", f"Ingested record #{record_id} ({file.filename}) - Result: {auto_status}")
+        log_action(conn, current_user["username"], current_user["role"], "UPLOAD", f"Ingested record #{record_id} ({file.filename}) - Status: {auto_status}")
         processed.append({"id": record_id, "filename": file.filename, "status": auto_status, "flags": flags})
 
     return {"message": f"Processed {len(processed)} document(s)", "records": processed}
@@ -564,15 +570,22 @@ def list_records(current_user: dict = Depends(get_current_user), conn: sqlite3.C
         sanitized.append(rec)
     return sanitized
 
+# FIXED: Tuple syntax (record_id,) ensures preview loads without 500 error
 @app.get("/api/records/{record_id}/file")
 def get_record_file(
     record_id: int,
     current_user: dict = Depends(get_current_user),
     conn: sqlite3.Connection = Depends(get_db)
 ):
-    record = conn.execute("SELECT file_path, filename FROM records WHERE id = ?", (record_id)).fetchone()
+    record = conn.execute("SELECT file_path, filename FROM records WHERE id = ?", (record_id,)).fetchone()
     if not record or not os.path.exists(record["file_path"]):
-        raise HTTPException(status_code=404, detail="File missing from storage")
+        raise HTTPException(status_code=404, detail="File missing from server storage")
+    
+    ext = record["filename"].split('.')[-1].lower() if '.' in record["filename"] else ""
+    if ext == "txt":
+        with open(record["file_path"], "r", encoding="utf-8", errors="ignore") as f:
+            return PlainTextResponse(f.read())
+            
     return FileResponse(record["file_path"], filename=record["filename"])
 
 class RecordUpdatePayload(BaseModel):
