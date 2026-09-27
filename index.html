@@ -1,1124 +1,1858 @@
-import os
-import re
-import io
-import json
-import sqlite3
-import hashlib
-from datetime import datetime, timedelta
-from typing import Optional, List, Dict, Any
-
-from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Query
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
-from fastapi.middleware.cors import CORSMiddleware
-from jose import JWTError, jwt
-from pydantic import BaseModel
-
-try:
-    import cv2
-    import numpy as np
-    CV2_AVAILABLE = True
-except ImportError:
-    CV2_AVAILABLE = False
-
-try:
-    import pytesseract
-    from PIL import Image
-    possible_paths = [
-        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
-        r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
-        os.path.expandvars(r"%LOCALAPPDATA%\Programs\Tesseract-OCR\tesseract.exe")
-    ]
-    for p in possible_paths:
-        if os.path.exists(p):
-            pytesseract.pytesseract.tesseract_cmd = p
-            break
-    OCR_AVAILABLE = True
-except ImportError:
-    OCR_AVAILABLE = False
-
-try:
-    from PyPDF2 import PdfReader
-    PDF_TEXT_AVAILABLE = True
-except ImportError:
-    PDF_TEXT_AVAILABLE = False
-
-try:
-    from pdf2image import convert_from_bytes
-    PDF2IMAGE_AVAILABLE = True
-except ImportError:
-    PDF2IMAGE_AVAILABLE = False
-
-SECRET_KEY = "bharat-vault-secure-token-secret-key-2026"
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7
-UPLOAD_DIR = "uploads"
-DB_FILE = "terra_digitize.db"
-
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/token", auto_error=False)
-
-app = FastAPI(title="BharatVault API", version="8.5")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-def hash_password(password: str) -> str:
-    return hashlib.sha256(password.encode("utf-8")).hexdigest()
-
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return hash_password(plain_password) == hashed_password
-
-def get_db():
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    try:
-        yield conn
-    finally:
-        conn.close()
-
-def init_db():
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-    cursor = conn.cursor()
-
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT UNIQUE NOT NULL,
-        full_name TEXT NOT NULL,
-        hashed_password TEXT NOT NULL,
-        role TEXT NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-    """)
-
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS records (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        filename TEXT NOT NULL,
-        file_path TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'Pending Verification',
-        raw_text TEXT,
-        owner_name TEXT,
-        seller_name TEXT,
-        buyer_name TEXT,
-        share_hissa TEXT,
-        survey_number TEXT,
-        khasra_number TEXT,
-        khata_number TEXT,
-        plot_number TEXT,
-        property_id TEXT,
-        total_area REAL,
-        sub_plot_areas TEXT,
-        land_use TEXT,
-        boundaries_desc TEXT,
-        village TEXT,
-        tehsil TEXT,
-        district TEXT,
-        registration_date TEXT,
-        mutation_date TEXT,
-        serial_number TEXT,
-        consideration_amount REAL,
-        confidence_scores TEXT,
-        validation_flags TEXT,
-        document_type TEXT,
-        uploaded_by TEXT,
-        ocr_quality REAL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-    """)
-
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS audit_logs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id TEXT NOT NULL,
-        role TEXT NOT NULL,
-        action TEXT NOT NULL,
-        details TEXT,
-        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-    """)
-    conn.commit()
-
-    # --- Safe migrations: add public-submission columns to pre-existing DBs ---
-    def _safe_add_column(table, coldef):
-        try:
-            cursor.execute(f"ALTER TABLE {table} ADD COLUMN {coldef}")
-            conn.commit()
-        except sqlite3.OperationalError:
-            pass  # column already exists
-
-    _safe_add_column("users", "phone_number TEXT")
-    _safe_add_column("records", "submission_source TEXT DEFAULT 'Officer'")
-    _safe_add_column("records", "submitted_by_user_id INTEGER")
-    _safe_add_column("records", "verification_deadline TEXT")
-    _safe_add_column("records", "escalated INTEGER DEFAULT 0")
-    _safe_add_column("records", "has_conflict INTEGER DEFAULT 0")
-    _safe_add_column("records", "verified_by TEXT")
-    _safe_add_column("records", "verified_at TEXT")
-    _safe_add_column("records", "verification_checklist TEXT")
-    _safe_add_column("records", "verification_notes TEXT")
-
-    cursor.execute("SELECT COUNT(*) FROM users")
-    if cursor.fetchone()[0] == 0:
-        cursor.execute(
-            "INSERT INTO users (username, full_name, hashed_password, role) VALUES (?, ?, ?, ?)",
-            ("admin", "System Administrator", hash_password("admin123"), "Admin")
-        )
-        conn.commit()
-    conn.close()
-
-init_db()
-
-PUBLIC_VERIFICATION_SLA_DAYS = 10
-PUBLIC_AWAITING_STATUS = "Awaiting Physical Verification"
-
-
-
-def log_action(conn: sqlite3.Connection, username: str, role: str, action: str, details: str = ""):
-    conn.execute(
-        "INSERT INTO audit_logs (user_id, role, action, details) VALUES (?, ?, ?, ?)",
-        (username, role, action, details)
-    )
-    conn.commit()
-
-def create_access_token(data: dict):
-    to_encode = data.copy()
-    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    to_encode.update({"exp": expire})
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-
-def get_current_user(
-    token: Optional[str] = Depends(oauth2_scheme),
-    token_query: Optional[str] = Query(None, alias="token"),
-    conn: sqlite3.Connection = Depends(get_db)
-):
-    actual_token = token or token_query
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Session invalid or expired",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-    if not actual_token:
-        raise credentials_exception
-    try:
-        payload = jwt.decode(actual_token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
-        role: str = payload.get("role")
-        if username is None or role is None:
-            raise credentials_exception
-    except JWTError:
-        raise credentials_exception
-
-    user = conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
-    if user is None:
-        raise credentials_exception
-    return {"username": user["username"], "full_name": user["full_name"], "role": user["role"], "id": user["id"]}
-
-# ----------------- OCR & Preprocessing -----------------
-
-def preprocess_image_for_ocr(image_bytes: bytes) -> Image.Image:
-    if not CV2_AVAILABLE:
-        return Image.open(io.BytesIO(image_bytes))
-    nparr = np.frombuffer(image_bytes, np.uint8)
-    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-    if img is None:
-        return Image.open(io.BytesIO(image_bytes))
-
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    h, w = gray.shape
-    if w < 1500:
-        scale = 1500.0 / w
-        gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
-
-    denoised = cv2.bilateralFilter(gray, 9, 75, 75)
-    thresh = cv2.adaptiveThreshold(denoised, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 15)
-    return Image.fromarray(thresh)
-
-def run_ocr(file_content: bytes, filename: str) -> (str, float):
-    ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
-    text = ""
-    quality = 0.90
-
-    # If uploading text file, read directly without dummy replacement
-    if ext == "txt":
-        return file_content.decode("utf-8", errors="ignore").strip(), 1.0
-
-    if ext in ("png", "jpg", "jpeg", "bmp", "tiff", "tif"):
-        if OCR_AVAILABLE:
-            try:
-                processed_pil = preprocess_image_for_ocr(file_content)
-                text = pytesseract.image_to_string(processed_pil, lang="eng", config=r"--oem 3 --psm 6")
-                if len(text.strip()) < 50:
-                    # Sparse result - retry with default page segmentation before giving up
-                    text = pytesseract.image_to_string(processed_pil, lang="eng")
-                quality = 0.90 if len(text.strip()) >= 50 else 0.55
-            except Exception:
-                text = ""
-                quality = 0.0
-        else:
-            quality = 0.0
-
-    elif ext == "pdf":
-        if PDF_TEXT_AVAILABLE:
-            try:
-                reader = PdfReader(io.BytesIO(file_content))
-                text = "\n".join((page.extract_text() or "") for page in reader.pages)
-            except Exception:
-                text = ""
-
-        # Most land-record scans are image-only PDFs (no embedded text layer), so
-        # PyPDF2 alone returns empty/near-empty text. Fall back to rendering each
-        # page as an image and running the same OCR pipeline used for uploads.
-        if len(text.strip()) < 50 and PDF2IMAGE_AVAILABLE and OCR_AVAILABLE:
-            try:
-                pages = convert_from_bytes(file_content, dpi=300)
-                ocr_parts = []
-                for page_img in pages:
-                    buf = io.BytesIO()
-                    page_img.save(buf, format="PNG")
-                    processed_pil = preprocess_image_for_ocr(buf.getvalue())
-                    ocr_parts.append(pytesseract.image_to_string(processed_pil, lang="eng", config=r"--oem 3 --psm 6"))
-                ocr_text = "\n".join(ocr_parts).strip()
-                if len(ocr_text) > len(text.strip()):
-                    text = ocr_text
-                    quality = 0.75  # scanned-PDF OCR fallback - slightly lower confidence than a native text layer
-                elif text.strip():
-                    quality = 0.90
-            except Exception:
-                pass
-        elif text.strip():
-            quality = 0.95  # native PDF text layer - most reliable source
-
-        if not text.strip():
-            quality = 0.0
-
-    return text.strip(), quality
-
-KNOWN_DISTRICTS = ["Jaipur", "Jodhpur", "Udaipur", "Kota", "Ajmer", "Alwar", "Bikaner", "Bharatpur", "Sikar", "Chomu", "Amer"]
- 
-# Words that can get captured by the identifier regexes below when they match only the
-# field's own label (e.g. "Khasra No" with the value on the next token, or a colon landing
-# right after "Khasra" so the optional "No."/"Number" text falls inside the capture group
-# instead of being consumed as the label). Real Khasra/Khata/Plot/Property IDs always contain
-# a digit, so any match that is purely one of these label words - or has no digit at all - is
-# not a real value and should be discarded rather than stored.
-_IDENTIFIER_LABEL_WORDS = {"no", "no.", "number", "n0", "n0.", "na", "n/a", "-"}
- 
-def _clean_identifier_match(raw: Optional[str]) -> Optional[str]:
-    if not raw:
-        return None
-    val = raw.strip()
-    if not val:
-        return None
-    if val.lower().rstrip(".") in _IDENTIFIER_LABEL_WORDS:
-        return None
-    if not re.search(r"[0-9]", val):
-        return None
-    return val
-
-def clean_extracted_name(raw: str) -> str:
-    raw = re.sub(r"(?i)\b(s/o|d/o|w/o|aged|r/o|village|resident of|late|son of|daughter of|wife of)\b.*", "", raw)
-    return re.sub(r"[\.,;:_~]", " ", raw).strip().title()
-
-def normalize_date(raw: str) -> Optional[str]:
-    raw = raw.strip()
-    for fmt in ("%d-%m-%Y", "%d/%m/%Y", "%d %b %Y", "%d %B %Y", "%d-%m-%y", "%d/%m/%y"):
-        try:
-            return datetime.strptime(raw, fmt).strftime("%Y-%m-%d")
-        except ValueError:
-            continue
-    return None
-
-def extract_land_identity(text: str):
-    result = {
-        "document_type": "Sale Deed",
-        "serial_number": None,
-        "district": None,
-        "tehsil": None,
-        "village": None,
-        "khasra_number": None,
-        "khata_number": None,
-        "plot_number": None,
-        "property_id": None,
-        "survey_number": None,
-        "owner_name": None,
-        "seller_name": None,
-        "buyer_name": None,
-        "share_hissa": "1/1 (Full)",
-        "total_area": None,
-        "sub_plot_areas": [],
-        "land_use": "Agricultural",
-        "boundaries_desc": None,
-        "consideration_amount": None,
-        "registration_date": None,
-        "mutation_date": None,
-    }
-    confidence: Dict[str, float] = {}
-    t = text or ""
-    upper = t.upper()
-
-    if "KHATAUNI" in upper or "KHASRA" in upper:
-        result["document_type"] = "Khasra-Khatauni Record"
-    elif "RECORD OF RIGHTS" in upper or re.search(r"\bROR\b", upper):
-        result["document_type"] = "Record of Rights (RoR)"
-    elif "PATTA" in upper:
-        result["document_type"] = "Patta / Lease"
-
-    # Serial Number
-    m = re.search(r"(?:SERIAL|STAMP)\s*(?:NO|N0|\.)?\s*[:\.\-]?\s*([A-Z0-9\-\/]+)", t, re.IGNORECASE)
-    if m:
-        result["serial_number"] = m.group(1).strip()
-        confidence["serial_number"] = 0.95
-
-    # Registration & Execution Dates
-    date_patterns = [
-        r"Registration\s*Date\s*[:\-]?\s*([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4})",
-        r"executed\s+on\s*[:\-]?\s*([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4})",
-        r"DATE\s*[:\-]?\s*([0-9]{1,2}\s+[A-Za-z]{3,9}\s+[0-9]{4})",
-        r"DATE\s*[:\-]?\s*([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4})",
-    ]
-    for dp in date_patterns:
-        m = re.search(dp, t, re.IGNORECASE)
-        if m:
-            parsed_d = normalize_date(m.group(1))
-            if parsed_d:
-                result["registration_date"] = parsed_d
-                confidence["registration_date"] = 0.96
-                break
-
-    # Mutation Date
-    m = re.search(r"Mutation\s*Date\s*[:\-]?\s*([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4})", t, re.IGNORECASE)
-    if m:
-        result["mutation_date"] = normalize_date(m.group(1))
-        confidence["mutation_date"] = 0.90
-
-    # Seller & Buyer
-    m = re.search(r"(?:VENDOR|SELLER)\s*(?:\(Seller\))?\s*[:\-]?\s*([A-Za-z\s\.]+?)(?:,|\n|S\/O|D\/O|AGED|R\/O|Son of|Wife of)", t, re.IGNORECASE)
-    if m:
-        result["seller_name"] = clean_extracted_name(m.group(1))
-        confidence["seller_name"] = 0.92
-
-    m = re.search(r"(?:VENDEE|BUYER|RECORDED\s*HOLDER|ALLOTTEE)\s*(?:\([^\)]+\))?\s*[:\-]?\s*([A-Za-z\s\.]+?)(?:,|\n|S\/O|D\/O|AGED|R\/O|Son of|Wife of)", t, re.IGNORECASE)
-    if m:
-        result["buyer_name"] = clean_extracted_name(m.group(1))
-        confidence["buyer_name"] = 0.93
-
-    result["owner_name"] = result["buyer_name"] or result["seller_name"]
-    confidence["owner_name"] = confidence.get("buyer_name", 0.92)
-
-    # Share / Hissa
-    m = re.search(r"(?:Share|Hissa)\s*[:\-]?\s*([0-9\/\sA-Za-z\(\)]+)", t, re.IGNORECASE)
-    if m:
-        result["share_hissa"] = m.group(1).strip()
-        confidence["share_hissa"] = 0.95
-
-    # Location
-    m = re.search(r"(?:District)\s*[:\-]?\s*([A-Za-z]+)", t, re.IGNORECASE)
-    if m:
-        result["district"] = m.group(1).strip().title()
-        confidence["district"] = 0.98
-
-    m = re.search(r"(?:Tehsil)\s*[:\-]?\s*([A-Za-z]+)", t, re.IGNORECASE)
-    if m:
-        result["tehsil"] = m.group(1).strip().title()
-        confidence["tehsil"] = 0.95
-
-    m = re.search(r"(?:Village|Locality|Urban Locality)\s*[:\-]?\s*([A-Za-z0-9\s]+?)(?:,|\n|$)", t, re.IGNORECASE)
-    if m:
-        result["village"] = m.group(1).strip().title()
-        confidence["village"] = 0.95
-
-    # Identifiers
-    m = re.search(r"Khasra\s*(?:No\.?|Number)?\s*[:\-]?\s*([0-9\/\-A-Za-z]+)", t, re.IGNORECASE)
-    khasra_val = _clean_identifier_match(m.group(1)) if m else None
-    if khasra_val:
-        result["khasra_number"] = khasra_val
-        confidence["khasra_number"] = 0.94
-
-    m = re.search(r"Khata\s*(?:No\.?|Number)?\s*[:\-]?\s*([0-9A-Za-z\/\-]+)", t, re.IGNORECASE)
-    khata_val = _clean_identifier_match(m.group(1)) if m else None
-    if khata_val:
-        result["khata_number"] = khata_val
-        confidence["khata_number"] = 0.91
-
-    m = re.search(r"Plot\s*(?:No\.?|Number)?\s*[:\-]?\s*([0-9A-Za-z\/\-]+)", t, re.IGNORECASE)
-    plot_val = _clean_identifier_match(m.group(1)) if m else None
-    if plot_val:
-        result["plot_number"] = plot_val
-        confidence["plot_number"] = 0.90
-
-    m = re.search(r"Property\s*ID\s*[:\-]?\s*([0-9A-Za-z\-\/_]+)", t, re.IGNORECASE)
-    property_val = _clean_identifier_match(m.group(1)) if m else None
-    if property_val:
-        result["property_id"] = property_val
-        confidence["property_id"] = 0.92
-
-    # Area & Sub-plots
-    m = re.search(r"(?:Area|Total\s*Area)\s*[:\-]?\s*([0-9\.]+)\s*(?:bigha|acre|hectare|sq)?", t, re.IGNORECASE)
-    if m:
-        try:
-            result["total_area"] = float(m.group(1))
-            confidence["total_area"] = 0.95
-        except ValueError:
-            pass
-
-    sub_matches = re.findall(r"Sub-plot\s*[A-Za-z0-9]*\s*=\s*([0-9\.]+)", t, re.IGNORECASE)
-    if sub_matches:
-        result["sub_plot_areas"] = [float(x) for x in sub_matches]
-
-    # Land use
-    m = re.search(r"Land\s*Use(?:\s*[\/\(A-Za-z\)]*)?\s*[:\-]?\s*([A-Za-z\s\(\)]+?)(?:,|\n|$)", t, re.IGNORECASE)
-    if m:
-        result["land_use"] = m.group(1).strip().title()
-        confidence["land_use"] = 0.93
-
-    # Boundaries
-    m = re.search(r"Boundaries\s*[:\-]?\s*([^\n\r]+)", t, re.IGNORECASE)
-    if m:
-        result["boundaries_desc"] = m.group(1).strip()
-        confidence["boundaries_desc"] = 0.90
-
-    # Consideration amount
-    m = re.search(r"(?:Consideration|Amount|Sale\s+Value|Price)\s*[:\-]?\s*(?:Rs\.?|INR)?\s*([0-9,]+(?:\.[0-9]{2})?)", t, re.IGNORECASE)
-    if m:
-        try:
-            val_str = m.group(1).replace(",", "").strip()
-            result["consideration_amount"] = float(val_str)
-            confidence["consideration_amount"] = 0.98
-        except ValueError:
-            pass
-
-    return result, confidence
-
-def run_validation_rules(data: dict, conn: sqlite3.Connection, current_record_id: Optional[int] = None) -> List[str]:
-    flags = []
-
-    # Rule 1: Chronological Order (Mutation cannot precede Registration)
-    reg_date_str = data.get("registration_date")
-    mut_date_str = data.get("mutation_date")
-    if reg_date_str and mut_date_str:
-        try:
-            reg_d = datetime.strptime(reg_date_str, "%Y-%m-%d")
-            mut_d = datetime.strptime(mut_date_str, "%Y-%m-%d")
-            if mut_d < reg_d:
-                flags.append(f"Timeline Anomaly: Mutation date ({mut_date_str}) precedes registration date ({reg_date_str})")
-        except ValueError:
-            pass
-
-    # Rule 2: Sub-plot Sum Reconciliation
-    total_area = data.get("total_area")
-    sub_plots = data.get("sub_plot_areas") or []
-    if total_area is not None and len(sub_plots) > 0:
-        sub_sum = round(sum(sub_plots), 2)
-        if round(float(total_area), 2) != sub_sum:
-            flags.append(f"Area Sum Mismatch: Total area ({total_area} Bigha) != sum of sub-plots ({sub_sum} Bigha)")
-
-    # Rule 3: Missing Mandatory Location Identifier
-    if not data.get("district"):
-        flags.append("Missing Mandatory Location Identifier: 'District' is unassigned")
-
-    # Rule 4: Duplicate Stamp Serial Check (colliding only against OTHER records)
-    serial = data.get("serial_number")
-    if serial:
-        query = "SELECT id FROM records WHERE serial_number = ?"
-        params = [serial]
-        if current_record_id:
-            query += " AND id != ?"
-            params.append(current_record_id)
-        dup = conn.execute(query, params).fetchall()
-        if dup:
-            flags.append(f"Duplicate Serial Warning: Serial '{serial}' already registered under record #{dup[0]['id']}")
-
-    # Rule 5: Ownership Chain Continuity (Chain-of-Title fraud/error detection)
-    khasra = data.get("khasra_number")
-    village = data.get("village")
-    district = data.get("district")
-    seller = (data.get("seller_name") or "").strip().lower()
-    reg_date = data.get("registration_date")
-    if khasra and village and district and seller:
-        query = """
-            SELECT id, buyer_name, registration_date FROM records
-            WHERE LOWER(TRIM(khasra_number)) = LOWER(TRIM(?))
-              AND LOWER(TRIM(village)) = LOWER(TRIM(?))
-              AND LOWER(TRIM(district)) = LOWER(TRIM(?))
-        """
-        params = [khasra, village, district]
-        if current_record_id:
-            query += " AND id != ?"
-            params.append(current_record_id)
-        prior_records = conn.execute(query, params).fetchall()
-
-        # Narrow down to the transaction immediately preceding this one chronologically
-        candidates = []
-        for pr in prior_records:
-            pr_date = pr["registration_date"]
-            if reg_date and pr_date:
-                try:
-                    if datetime.strptime(pr_date, "%Y-%m-%d") < datetime.strptime(reg_date, "%Y-%m-%d"):
-                        candidates.append(pr)
-                except ValueError:
-                    candidates.append(pr)
-            elif not reg_date:
-                candidates.append(pr)
-
-        if candidates:
-            candidates.sort(key=lambda p: p["registration_date"] or "", reverse=True)
-            latest_prior = candidates[0]
-            prior_buyer = (latest_prior["buyer_name"] or "").strip().lower()
-            if prior_buyer and prior_buyer != seller:
-                flags.append(
-                    f"Chain of Title Break: Seller '{data.get('seller_name')}' does not match the "
-                    f"previously recorded owner '{latest_prior['buyer_name']}' (Record #{latest_prior['id']})"
-                )
-
-    return flags
-
-# ----------------- Core API Endpoints -----------------
-
-def find_conflicting_records(conn: sqlite3.Connection, khasra, village, district, exclude_id: Optional[int] = None):
-    """Find other still-active (non-Verified) records claiming the exact same land parcel."""
-    if not (khasra and village and district):
-        return []
-    query = """
-        SELECT id, submitted_by_user_id, submission_source, status FROM records
-        WHERE LOWER(TRIM(khasra_number)) = LOWER(TRIM(?))
-          AND LOWER(TRIM(village)) = LOWER(TRIM(?))
-          AND LOWER(TRIM(district)) = LOWER(TRIM(?))
-          AND status != 'Verified'
-    """
-    params = [khasra, village, district]
-    if exclude_id:
-        query += " AND id != ?"
-        params.append(exclude_id)
-    return conn.execute(query, params).fetchall()
-
-def _flag_existing_conflict(conn: sqlite3.Connection, record_id: int, message: str):
-    row = conn.execute("SELECT validation_flags FROM records WHERE id = ?", (record_id,)).fetchone()
-    if not row:
-        return
-    existing = json.loads(row["validation_flags"]) if row["validation_flags"] else []
-    if message not in existing:
-        existing.append(message)
-    conn.execute("UPDATE records SET has_conflict = 1, validation_flags = ? WHERE id = ?", (json.dumps(existing), record_id))
-
-def _ingest_record(
-    conn: sqlite3.Connection,
-    file_bytes: bytes,
-    filename: str,
-    uploader_username: str,
-    submission_source: str = "Officer",
-    submitted_by_user_id: Optional[int] = None,
-) -> Dict[str, Any]:
-    """Shared pipeline: save file -> OCR -> extract -> validate -> conflict-check -> insert."""
-    file_location = os.path.join(UPLOAD_DIR, filename)
-    with open(file_location, "wb") as f:
-        f.write(file_bytes)
-
-    raw_text, ocr_quality = run_ocr(file_bytes, filename)
-    extracted, field_confidence = extract_land_identity(raw_text)
-    flags = run_validation_rules(extracted, conn)
-
-    verification_deadline = None
-    has_conflict = 0
-
-    if submission_source == "Public":
-        # Public self-submissions are NEVER auto-verified — they always need a physical, on-site
-        # check by a Revenue Officer before they can enter the official registry.
-        final_status = PUBLIC_AWAITING_STATUS
-        verification_deadline = (datetime.utcnow() + timedelta(days=PUBLIC_VERIFICATION_SLA_DAYS)).strftime("%Y-%m-%d")
-
-        conflicts = find_conflicting_records(conn, extracted.get("khasra_number"), extracted.get("village"), extracted.get("district"))
-        if conflicts:
-            has_conflict = 1
-            conflict_ids = ", ".join(f"#{c['id']}" for c in conflicts)
-            flags.append(
-                f"Competing Claim Detected: This land is also claimed in record(s) {conflict_ids} — "
-                f"both submissions must be physically verified before either can be approved."
-            )
-            for c in conflicts:
-                _flag_existing_conflict(
-                    conn, c["id"],
-                    "Competing Claim Detected: A newer submission also claims this same land — "
-                    "both must be physically re-verified before either proceeds."
-                )
-    else:
-        # Officer/Clerk ingested documents: clean docs auto-verify, anything flagged needs review
-        final_status = "Verified" if len(flags) == 0 else "Flagged"
-
-    cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO records (
-            filename, file_path, status, raw_text, owner_name, seller_name, buyer_name,
-            share_hissa, document_type, serial_number, survey_number, khasra_number, khata_number,
-            plot_number, property_id, total_area, sub_plot_areas, land_use, boundaries_desc,
-            village, tehsil, district, consideration_amount, registration_date, mutation_date,
-            confidence_scores, validation_flags, uploaded_by, ocr_quality,
-            submission_source, submitted_by_user_id, verification_deadline, has_conflict
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        filename,
-        file_location,
-        final_status,
-        raw_text,
-        extracted["owner_name"],
-        extracted["seller_name"],
-        extracted["buyer_name"],
-        extracted["share_hissa"],
-        extracted["document_type"],
-        extracted["serial_number"],
-        extracted["survey_number"],
-        extracted["khasra_number"],
-        extracted["khata_number"],
-        extracted["plot_number"],
-        extracted["property_id"],
-        extracted["total_area"],
-        json.dumps(extracted["sub_plot_areas"]),
-        extracted["land_use"],
-        extracted["boundaries_desc"],
-        extracted["village"],
-        extracted["tehsil"],
-        extracted["district"],
-        extracted["consideration_amount"],
-        extracted["registration_date"],
-        extracted["mutation_date"],
-        json.dumps(field_confidence),
-        json.dumps(flags),
-        uploader_username,
-        ocr_quality,
-        submission_source,
-        submitted_by_user_id,
-        verification_deadline,
-        has_conflict,
-    ))
-    record_id = cursor.lastrowid
-    conn.commit()
-
-    return {"id": record_id, "filename": filename, "status": final_status, "flags": flags, "has_conflict": bool(has_conflict)}
-
-# ----------------- Core API Endpoints -----------------
-
-@app.post("/api/auth/token")
-def login(form_data: OAuth2PasswordRequestForm = Depends(), conn: sqlite3.Connection = Depends(get_db)):
-    user = conn.execute("SELECT * FROM users WHERE username = ?", (form_data.username,)).fetchone()
-    if not user or not verify_password(form_data.password, user["hashed_password"]):
-        raise HTTPException(status_code=400, detail="Invalid username or password")
-
-    token = create_access_token({"sub": user["username"], "role": user["role"]})
-    log_action(conn, user["username"], user["role"], "LOGIN", "User logged in")
-    return {
-        "access_token": token,
-        "token_type": "bearer",
-        "role": user["role"],
-        "username": user["username"],
-        "full_name": user["full_name"]
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BharatVault | Intelligent Land Record & Validation System</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8F%9B%EF%B8%8F%3C/text%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --primary: #4f46e5;
+      --primary-hover: #4338ca;
+      --primary-light: #eef2ff;
+      --accent: #06b6d4;
+      --accent2: #a855f7;
+      --gold: #f59e0b;
+      --sidebar-bg: #0a0e1a;
+      --sidebar-text: #94a3b8;
+      --bg: #f1f4fa;
+      --card-bg: #ffffff;
+      --text: #0f172a;
+      --border: #e6eaf2;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --shadow-sm: 0 1px 3px rgba(15,23,42,0.06), 0 1px 2px rgba(15,23,42,0.04);
+      --shadow-md: 0 10px 28px rgba(15,23,42,0.09);
+      --shadow-lg: 0 24px 55px rgba(15,23,42,0.20);
+      --shadow-glow: 0 8px 24px rgba(79,70,229,0.35);
+      --radius: 16px;
     }
 
-class PublicRegisterPayload(BaseModel):
-    full_name: str
-    username: str
-    password: str
-    phone_number: Optional[str] = None
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      height: 100vh;
+      overflow: hidden;
+      -webkit-font-smoothing: antialiased;
+    }
+    h1, h2, h3, h4, .brand-font { font-family: 'Manrope', 'Inter', sans-serif; }
+    .hidden { display: none !important; }
+    ::-webkit-scrollbar { width: 9px; height: 9px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 8px; }
+    ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
 
-@app.post("/api/auth/register-public")
-def register_public(payload: PublicRegisterPayload, conn: sqlite3.Connection = Depends(get_db)):
-    """Public self-service signup — no Admin has to manually create an account for every citizen."""
-    username = payload.username.strip()
-    if not username or not payload.password or not payload.full_name.strip():
-        raise HTTPException(status_code=400, detail="Full name, username and password are required")
-    existing = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
-    if existing:
-        raise HTTPException(status_code=400, detail="That username is already taken")
-    conn.execute(
-        "INSERT INTO users (username, full_name, hashed_password, role, phone_number) VALUES (?, ?, ?, ?, ?)",
-        (username, payload.full_name.strip(), hash_password(payload.password), "Citizen", (payload.phone_number or "").strip())
-    )
-    conn.commit()
-    log_action(conn, username, "Citizen", "PUBLIC_REGISTER", f"Public citizen self-registered: {payload.full_name.strip()}")
-    return {"message": "Account created. You can now sign in and submit your land record for verification."}
+    @keyframes fadeInUp { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes popIn { from { opacity: 0; transform: scale(0.94) translateY(8px); } to { opacity: 1; transform: scale(1) translateY(0); } }
+    @keyframes floatBlob { 0%, 100% { transform: translate(0,0) scale(1); } 33% { transform: translate(30px,-30px) scale(1.08); } 66% { transform: translate(-20px,20px) scale(0.95); } }
+    @keyframes shimmer { 0% { background-position: -400px 0; } 100% { background-position: 400px 0; } }
+    @keyframes pulseDot { 0%, 100% { box-shadow: 0 0 0 0 rgba(239,68,68,0.5); } 70% { box-shadow: 0 0 0 6px rgba(239,68,68,0); } }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes slideInRight { from { opacity: 0; transform: translateX(30px); } to { opacity: 1; transform: translateX(0); } }
+    @keyframes slideOutRight { to { opacity: 0; transform: translateX(30px); } }
+    @keyframes shine { 0% { transform: translateX(-120%) rotate(8deg); } 100% { transform: translateX(220%) rotate(8deg); } }
+    @keyframes ringPop { from { stroke-dashoffset: 660; } }
+    @keyframes gradientShift { 0%,100% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } }
+    @keyframes bounceIn { 0% { opacity:0; transform: scale(0.8);} 60% { opacity:1; transform: scale(1.04);} 100% { transform: scale(1);} }
 
-@app.post("/api/records/upload")
-async def upload_documents(
-    files: List[UploadFile] = File(...),
-    current_user: dict = Depends(get_current_user),
-    conn: sqlite3.Connection = Depends(get_db)
-):
-    if current_user["role"] == "Citizen":
-        raise HTTPException(status_code=403, detail="Citizens must submit land records through the Public Submission portal.")
+    /* ---------------- Auth / Login ---------------- */
+    .auth-container {
+      position: relative;
+      display: grid; grid-template-columns: 1.15fr 1fr;
+      height: 100vh; overflow: hidden;
+      background: #05070f;
+    }
+    .auth-visual {
+      position: relative; overflow: hidden;
+      background: radial-gradient(circle at 20% 20%, #1e1b4b 0%, #0b1120 55%, #05070f 100%);
+      display: flex; flex-direction: column; justify-content: center;
+      padding: 4rem 4.5rem; color: white;
+    }
+    .auth-blob { position: absolute; border-radius: 50%; filter: blur(80px); opacity: 0.55; animation: floatBlob 14s ease-in-out infinite; }
+    .auth-blob.b1 { width: 460px; height: 460px; background: #6366f1; top: -120px; left: -120px; }
+    .auth-blob.b2 { width: 380px; height: 380px; background: #06b6d4; bottom: -130px; right: -60px; animation-delay: -5s; }
+    .auth-blob.b3 { width: 320px; height: 320px; background: #a855f7; bottom: 8%; left: 30%; animation-delay: -9s; }
+    .auth-visual-content { position: relative; z-index: 2; max-width: 440px; }
+    .auth-visual .tag {
+      display: inline-flex; align-items: center; gap: 0.4rem; background: rgba(255,255,255,0.08);
+      border: 1px solid rgba(255,255,255,0.15); padding: 0.35rem 0.85rem; border-radius: 30px;
+      font-size: 0.74rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: #a5b4fc;
+      margin-bottom: 1.4rem; backdrop-filter: blur(6px);
+    }
+    .auth-visual h1 { font-size: 2.5rem; font-weight: 800; line-height: 1.15; margin: 0 0 0.9rem; letter-spacing: -1px; }
+    .auth-visual h1 span { background: linear-gradient(135deg, #818cf8, #67e8f9); -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .auth-visual p.lead { color: #94a3b8; font-size: 0.98rem; line-height: 1.6; margin-bottom: 2.2rem; }
+    .auth-feature-list { display: flex; flex-direction: column; gap: 0.9rem; }
+    .auth-feature { display: flex; align-items: center; gap: 0.8rem; font-size: 0.88rem; color: #cbd5e1; }
+    .auth-feature .ic {
+      width: 34px; height: 34px; border-radius: 10px; flex-shrink: 0;
+      background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.1);
+      display: flex; align-items: center; justify-content: center; font-size: 1rem;
+    }
+    .auth-stats { display: flex; gap: 2.2rem; margin-top: 2.6rem; }
+    .auth-stats div b { display: block; font-size: 1.5rem; font-weight: 800; color: white; }
+    .auth-stats div span { font-size: 0.72rem; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; }
 
-    processed = []
-    for file in files:
-        contents = await file.read()
-        if not contents:
-            continue
-        result = _ingest_record(conn, contents, file.filename, current_user["username"], submission_source="Officer")
-        log_action(conn, current_user["username"], current_user["role"], "UPLOAD",
-                   f"Ingested record #{result['id']} ({file.filename}) - Result: {result['status']}")
-        processed.append(result)
+    .auth-form-side { display: flex; justify-content: center; align-items: center; background: #f8fafc; position: relative; }
+    .auth-card {
+      position: relative; z-index: 2;
+      background: white;
+      padding: 2.75rem; border-radius: 20px;
+      box-shadow: var(--shadow-lg);
+      width: 100%; max-width: 390px;
+      animation: popIn 0.5s cubic-bezier(.2,.9,.3,1.3);
+      border: 1px solid var(--border);
+    }
+    .auth-logo {
+      width: 54px; height: 54px; border-radius: 15px; margin: 0 auto 1rem;
+      background: linear-gradient(135deg, var(--primary), var(--accent2));
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1.5rem; box-shadow: 0 10px 24px rgba(79,70,229,0.35);
+    }
+    .auth-card h2 {
+      margin: 0 0 0.15rem; text-align: center; font-size: 1.65rem; font-weight: 800;
+      background: linear-gradient(135deg, var(--primary), var(--accent2));
+      -webkit-background-clip: text; background-clip: text; color: transparent;
+      letter-spacing: -0.5px;
+    }
+    .auth-card p.sub { color: #64748b; font-size: 0.86rem; text-align: center; margin-bottom: 1.8rem; }
+    .form-group { margin-bottom: 1.1rem; }
+    .form-group label { display: block; font-weight: 600; font-size: 0.76rem; margin-bottom: 0.35rem; color: #475569; text-transform: uppercase; letter-spacing: 0.03em; }
+    .form-group input, .form-group select {
+      width: 100%; padding: 0.72rem 0.85rem; border: 1.5px solid var(--border); border-radius: 10px;
+      font-size: 0.92rem; font-family: inherit; transition: all 0.2s ease; background: #fbfcfe;
+    }
+    .form-group input:focus, .form-group select:focus {
+      outline: none; border-color: var(--primary); background: white;
+      box-shadow: 0 0 0 4px rgba(79,70,229,0.12);
+    }
+    .auth-footnote { text-align: center; margin-top: 1.4rem; font-size: 0.76rem; color: #94a3b8; }
 
-    return {"message": f"Processed {len(processed)} document(s)", "records": processed}
+    .auth-mode-toggle { display: flex; gap: 0.4rem; background: #f1f4fa; padding: 0.3rem; border-radius: 12px; margin-bottom: 1.6rem; }
+    .auth-mode-btn { flex: 1; border: none; background: transparent; padding: 0.6rem 0.4rem; border-radius: 9px; font-size: 0.76rem; font-weight: 700; color: #64748b; cursor: pointer; transition: all 0.2s ease; font-family: inherit; }
+    .auth-mode-btn.active { background: white; color: var(--primary); box-shadow: var(--shadow-sm); }
+    .citizen-subtabs { display: flex; gap: 1.3rem; margin-bottom: 1.2rem; border-bottom: 1px solid var(--border); }
+    .citizen-subtab { font-size: 0.8rem; font-weight: 700; color: #94a3b8; padding-bottom: 0.6rem; cursor: pointer; border-bottom: 2px solid transparent; transition: color 0.2s ease; }
+    .citizen-subtab.active { color: var(--primary); border-bottom-color: var(--primary); }
 
-@app.post("/api/public/submit")
-async def submit_public_record(
-    files: List[UploadFile] = File(...),
-    current_user: dict = Depends(get_current_user),
-    conn: sqlite3.Connection = Depends(get_db)
-):
-    if current_user["role"] != "Citizen":
-        raise HTTPException(status_code=403, detail="Only citizen accounts can use the public submission portal.")
+    @media (max-width: 900px) {
+      .auth-container { grid-template-columns: 1fr; }
+      .auth-visual { display: none; }
+    }
 
-    processed = []
-    for file in files:
-        contents = await file.read()
-        if not contents:
-            continue
-        result = _ingest_record(
-            conn, contents, file.filename, current_user["username"],
-            submission_source="Public", submitted_by_user_id=current_user["id"]
-        )
-        log_action(conn, current_user["username"], current_user["role"], "PUBLIC_SUBMIT",
-                   f"Citizen submitted record #{result['id']} ({file.filename}) for physical verification")
-        processed.append(result)
+    /* ---------------- Shell ---------------- */
+    .app-shell { display: flex; height: 100vh; }
+    aside.sidebar {
+      width: 258px; background: var(--sidebar-bg); color: var(--sidebar-text);
+      display: flex; flex-direction: column; flex-shrink: 0;
+      background-image: radial-gradient(circle at 0% 0%, rgba(79,70,229,0.28), transparent 42%), radial-gradient(circle at 100% 100%, rgba(6,182,212,0.12), transparent 40%);
+      border-right: 1px solid rgba(255,255,255,0.06);
+    }
+    .sidebar-brand { padding: 1.6rem 1.3rem; border-bottom: 1px solid rgba(255,255,255,0.08); display: flex; align-items: center; gap: 0.7rem; }
+    .sidebar-brand .mark {
+      width: 36px; height: 36px; border-radius: 11px; flex-shrink: 0;
+      background: linear-gradient(135deg, var(--primary), var(--accent));
+      display: flex; align-items: center; justify-content: center; font-size: 1.05rem;
+      box-shadow: 0 0 18px rgba(99,102,241,0.55);
+    }
+    .sidebar-brand h1 { margin: 0; font-size: 1.18rem; color: white; letter-spacing: -0.3px; }
+    .sidebar-brand span { font-size: 0.66rem; color: #38bdf8; text-transform: uppercase; font-weight: 700; letter-spacing: 0.07em; }
 
-    return {"message": f"Submitted {len(processed)} document(s) for physical verification.", "records": processed}
+    .sidebar-section-label { padding: 0.9rem 1.2rem 0.35rem; font-size: 0.66rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.09em; color: #475569; }
+    .sidebar-menu { list-style: none; padding: 0.2rem 0.6rem; margin: 0; }
+    .sidebar-item {
+      padding: 0.7rem 0.9rem; margin-bottom: 0.2rem; border-radius: 11px;
+      display: flex; align-items: center; gap: 0.75rem; cursor: pointer;
+      color: var(--sidebar-text); font-weight: 500; font-size: 0.89rem;
+      transition: all 0.18s ease; position: relative;
+    }
+    .sidebar-item .ic { font-size: 1rem; width: 20px; text-align: center; }
+    .sidebar-item:hover { background: rgba(255,255,255,0.06); color: white; transform: translateX(3px); }
+    .sidebar-item.active {
+      background: linear-gradient(135deg, var(--primary), #4f46e5cc);
+      color: white; font-weight: 600; box-shadow: 0 4px 16px rgba(79,70,229,0.45);
+    }
+    .sidebar-spacer { flex: 1; }
 
-@app.get("/api/public/my-submissions")
-def my_public_submissions(current_user: dict = Depends(get_current_user), conn: sqlite3.Connection = Depends(get_db)):
-    if current_user["role"] != "Citizen":
-        raise HTTPException(status_code=403, detail="Citizen accounts only.")
-    rows = conn.execute("SELECT * FROM records WHERE submitted_by_user_id = ? ORDER BY id DESC", (current_user["id"],)).fetchall()
-    result = []
-    for r in rows:
-        rec = dict(r)
-        rec["validation_flags"] = json.loads(rec["validation_flags"]) if rec["validation_flags"] else []
-        rec["confidence_scores"] = json.loads(rec["confidence_scores"]) if rec["confidence_scores"] else {}
-        rec["verification_checklist"] = json.loads(rec["verification_checklist"]) if rec.get("verification_checklist") else {}
-        result.append(rec)
-    return result
+    .sidebar-help {
+      margin: 0.8rem; padding: 1rem; border-radius: 13px;
+      background: linear-gradient(160deg, rgba(99,102,241,0.16), rgba(6,182,212,0.08));
+      border: 1px solid rgba(255,255,255,0.08); font-size: 0.78rem; color: #cbd5e1;
+    }
+    .sidebar-help b { color: white; display: block; margin-bottom: 0.25rem; font-size: 0.82rem; }
 
-@app.get("/api/officer/public-queue")
-def public_queue(current_user: dict = Depends(get_current_user), conn: sqlite3.Connection = Depends(get_db)):
-    if current_user["role"] not in ["Admin", "Revenue Officer"]:
-        raise HTTPException(status_code=403, detail="Access denied.")
+    .sidebar-footer {
+      padding: 1rem 1.2rem; border-top: 1px solid rgba(255,255,255,0.08);
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .user-info { display: flex; align-items: center; gap: 0.6rem; }
+    .avatar {
+      width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0;
+      background: linear-gradient(135deg, var(--accent2), var(--primary));
+      display: flex; align-items: center; justify-content: center;
+      color: white; font-weight: 700; font-size: 0.88rem;
+      box-shadow: 0 0 0 3px rgba(255,255,255,0.06);
+    }
+    .user-info .name { color: white; font-size: 0.85rem; font-weight: 600; line-height: 1.2; }
+    .user-info .role { font-size: 0.72rem; color: #38bdf8; }
+    .btn-logout {
+      background: transparent; border: 1px solid #334155; color: #94a3b8; cursor: pointer;
+      border-radius: 8px; padding: 0.42rem 0.7rem; font-size: 0.8rem; transition: all 0.2s ease;
+    }
+    .btn-logout:hover { background: var(--danger); color: white; border-color: var(--danger); transform: translateY(-1px); }
 
-    # Auto-escalate anything that missed its physical-verification SLA
-    today_str = datetime.utcnow().strftime("%Y-%m-%d")
-    overdue = conn.execute("""
-        SELECT id FROM records
-        WHERE submission_source = 'Public' AND status = ?
-          AND escalated = 0 AND verification_deadline IS NOT NULL AND verification_deadline < ?
-    """, (PUBLIC_AWAITING_STATUS, today_str)).fetchall()
-    for row in overdue:
-        conn.execute("UPDATE records SET escalated = 1 WHERE id = ?", (row["id"],))
-        log_action(conn, "SYSTEM", "System", "ESCALATION",
-                   f"Record #{row['id']} missed its physical-verification deadline and was escalated to senior authority review.")
-    if overdue:
-        conn.commit()
+    /* ---------------- Top bar ---------------- */
+    .topbar {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0.9rem 2.2rem; background: rgba(255,255,255,0.75); backdrop-filter: blur(10px);
+      border-bottom: 1px solid var(--border); flex-shrink: 0;
+    }
+    .topbar-greeting { font-size: 0.92rem; color: #334155; font-weight: 600; }
+    .topbar-greeting .wave { display: inline-block; animation: bounceIn 0.6s ease; }
+    .topbar-sub { font-size: 0.74rem; color: #94a3b8; margin-top: 0.1rem; }
+    .topbar-right { display: flex; align-items: center; gap: 0.9rem; }
+    .live-clock {
+      font-size: 0.78rem; font-weight: 700; color: var(--primary); background: var(--primary-light);
+      padding: 0.4rem 0.8rem; border-radius: 20px; font-variant-numeric: tabular-nums;
+      display: flex; align-items: center; gap: 0.4rem;
+    }
+    .live-clock .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--success); animation: pulseDot 1.8s infinite; }
+    .status-pill {
+      font-size: 0.72rem; font-weight: 700; padding: 0.38rem 0.75rem; border-radius: 20px;
+      background: #ecfdf5; color: #059669; border: 1px solid #a7f3d0;
+    }
 
-    rows = conn.execute("""
-        SELECT r.*, u.full_name AS submitter_name, u.phone_number AS submitter_phone
-        FROM records r LEFT JOIN users u ON r.submitted_by_user_id = u.id
-        WHERE r.submission_source = 'Public'
-        ORDER BY r.escalated DESC, r.verification_deadline ASC, r.id DESC
-    """).fetchall()
+    /* ---------------- Content Area ---------------- */
+    .app-main-col { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+    main.content-area { flex: 1; padding: 1.9rem 2.2rem 2.4rem; overflow-y: auto; animation: fadeIn 0.4s ease; }
+    .tab-panel { animation: fadeInUp 0.35s ease; }
+    .panel-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.6rem; }
+    .panel-header h2 { margin: 0; color: var(--text); font-size: 1.55rem; font-weight: 800; letter-spacing: -0.4px; }
+    .panel-header .desc { font-size: 0.83rem; color: #64748b; margin-top: 0.2rem; }
+    h2 { font-weight: 800; letter-spacing: -0.4px; }
+    h3 { font-size: 1rem; color: #334155; font-weight: 700; display: flex; align-items: center; gap: 0.4rem; }
 
-    result = []
-    for r in rows:
-        rec = dict(r)
-        rec["validation_flags"] = json.loads(rec["validation_flags"]) if rec["validation_flags"] else []
-        rec["confidence_scores"] = json.loads(rec["confidence_scores"]) if rec["confidence_scores"] else {}
-        rec["verification_checklist"] = json.loads(rec["verification_checklist"]) if rec.get("verification_checklist") else {}
-        result.append(rec)
-    return result
+    .card {
+      background: var(--card-bg); border-radius: var(--radius); padding: 1.6rem;
+      border: 1px solid var(--border); box-shadow: var(--shadow-sm);
+      margin-bottom: 1.5rem; transition: box-shadow 0.25s ease;
+    }
+    .card:hover { box-shadow: var(--shadow-md); }
 
-class VerificationChecklistPayload(BaseModel):
-    checks: Dict[str, bool]
-    notes: Optional[str] = None
+    /* ---------------- Hero banner ---------------- */
+    .hero-banner {
+      position: relative; overflow: hidden; border-radius: 20px; padding: 1.9rem 2.2rem;
+      margin-bottom: 1.7rem; color: white;
+      background: linear-gradient(120deg, #4338ca, #4f46e5 35%, #7c3aed 65%, #06b6d4);
+      background-size: 220% 220%; animation: gradientShift 12s ease infinite;
+      box-shadow: 0 20px 45px rgba(79,70,229,0.28);
+      display: flex; align-items: center; justify-content: space-between; gap: 1.5rem; flex-wrap: wrap;
+    }
+    .hero-banner::after {
+      content: ""; position: absolute; top: -50%; left: -20%; width: 60%; height: 220%;
+      background: rgba(255,255,255,0.08); transform: rotate(12deg); animation: shine 7s ease-in-out infinite;
+    }
+    .hero-banner h2 { margin: 0 0 0.35rem; font-size: 1.45rem; font-weight: 800; position: relative; z-index: 1; }
+    .hero-banner p { margin: 0; font-size: 0.86rem; color: rgba(255,255,255,0.85); max-width: 480px; position: relative; z-index: 1; }
+    .hero-banner .hero-badge {
+      position: relative; z-index: 1; background: rgba(255,255,255,0.16); border: 1px solid rgba(255,255,255,0.25);
+      padding: 0.85rem 1.2rem; border-radius: 14px; backdrop-filter: blur(6px); text-align: center; min-width: 130px;
+    }
+    .hero-banner .hero-badge .n { font-size: 1.5rem; font-weight: 800; }
+    .hero-banner .hero-badge .l { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.85; }
 
-@app.post("/api/officer/verify-checklist/{record_id}")
-def verify_checklist(
-    record_id: int,
-    payload: VerificationChecklistPayload,
-    current_user: dict = Depends(get_current_user),
-    conn: sqlite3.Connection = Depends(get_db)
-):
-    if current_user["role"] not in ["Admin", "Revenue Officer"]:
-        raise HTTPException(status_code=403, detail="Access denied.")
-    record = conn.execute("SELECT * FROM records WHERE id = ?", (record_id,)).fetchone()
-    if not record:
-        raise HTTPException(status_code=404, detail="Record not found")
+    .metrics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1.2rem; margin-bottom: 1.7rem; }
+    .metric-card {
+      position: relative; overflow: hidden;
+      background: white; border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 1.35rem 1.4rem; box-shadow: var(--shadow-sm);
+      transition: transform 0.22s ease, box-shadow 0.22s ease;
+      display: flex; align-items: center; gap: 1rem;
+    }
+    .metric-card::before {
+      content: ""; position: absolute; top: 0; left: 0; right: 0; height: 3px;
+      background: linear-gradient(90deg, var(--primary), var(--accent));
+    }
+    .metric-card:hover { transform: translateY(-4px); box-shadow: var(--shadow-md); }
+    .metric-card .icon-bubble {
+      width: 46px; height: 46px; border-radius: 13px; flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center; font-size: 1.3rem;
+    }
+    .metric-card .num { font-size: 2.1rem; font-weight: 800; color: var(--text); letter-spacing: -1px; line-height: 1; }
+    .metric-card .label { color: #64748b; font-size: 0.78rem; font-weight: 600; margin-top: 0.25rem; }
+    .metric-card.mc-total .icon-bubble { background: var(--primary-light); color: var(--primary); }
+    .metric-card.mc-flagged .icon-bubble { background: #fee2e2; color: var(--danger); }
+    .metric-card.mc-pending .icon-bubble { background: #dbeafe; color: #2563eb; }
+    .metric-card.mc-verified .icon-bubble { background: #d1fae5; color: var(--success); }
 
-    checks = payload.checks or {}
-    all_confirmed = len(checks) > 0 and all(checks.values())
+    /* ---------------- Dashboard insight row: chart + activity ---------------- */
+    .insight-row { display: grid; grid-template-columns: 1fr 1.35fr; gap: 1.3rem; margin-bottom: 1.8rem; }
+    .chart-card { display: flex; align-items: center; gap: 1.4rem; }
+    .donut-wrap { position: relative; flex-shrink: 0; width: 148px; height: 148px; }
+    .donut-wrap svg { transform: rotate(-90deg); }
+    .donut-center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+    .donut-center .n { font-size: 1.5rem; font-weight: 800; color: var(--text); }
+    .donut-center .l { font-size: 0.65rem; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.04em; }
+    .legend { display: flex; flex-direction: column; gap: 0.7rem; }
+    .legend-item { display: flex; align-items: center; gap: 0.55rem; font-size: 0.83rem; color: #475569; }
+    .legend-item .sw { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
+    .legend-item b { color: var(--text); margin-left: auto; font-weight: 700; }
 
-    existing_flags = json.loads(record["validation_flags"]) if record["validation_flags"] else []
-    kept_flags = [f for f in existing_flags if not f.startswith("Competing Claim") and not f.startswith("Physical Verification")]
+    /* ---------------- Land Ownership Timeline ---------------- */
+    .timeline-card-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 1.1rem; flex-wrap: wrap; gap: 0.3rem; }
+    .timeline-card-head h3 { margin: 0; font-size: 1.05rem; font-weight: 800; }
+    .timeline-card-head .desc { font-size: 0.78rem; color: #94a3b8; }
+    .chain-list { display: flex; flex-direction: column; gap: 0.9rem; max-height: 320px; overflow-y: auto; padding-right: 4px; }
+    .chain-block { border: 1px solid var(--border); border-radius: 12px; padding: 0.9rem 1rem; background: #fbfcfe; animation: fadeInUp 0.35s ease; }
+    .chain-block-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; flex-wrap: wrap; gap: 0.4rem; }
+    .chain-block-head .land-id { font-weight: 800; font-size: 0.84rem; color: var(--text); }
+    .chain-block-head .land-loc { font-size: 0.72rem; color: #94a3b8; }
+    .chain-transfers-tag { font-size: 0.7rem; color: #94a3b8; font-weight: 600; }
+    .chain-break-tag { background: #fee2e2; color: var(--danger); font-size: 0.68rem; font-weight: 800; padding: 0.22rem 0.6rem; border-radius: 20px; display: inline-flex; align-items: center; gap: 0.3rem; }
+    .chain-break-tag::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: pulseDot 1.6s infinite; }
+    .chain-row { display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap; }
+    .hop-pill { display: flex; flex-direction: column; align-items: center; padding: 0.4rem 0.7rem; border-radius: 10px; background: var(--primary-light); color: var(--primary); font-size: 0.76rem; font-weight: 700; min-width: 88px; text-align: center; line-height: 1.3; }
+    .hop-pill .hp-date { font-size: 0.6rem; font-weight: 600; color: #64748b; margin-top: 0.15rem; }
+    .hop-pill.hp-broken { background: #fee2e2; color: var(--danger); }
+    .hop-pill.hp-broken .hp-date { color: #b91c1c; }
+    .hop-pill.hp-current { background: linear-gradient(135deg, var(--primary), var(--accent2)); color: white; box-shadow: var(--shadow-glow); }
+    .hop-pill.hp-current .hp-date { color: rgba(255,255,255,0.8); }
+    .hop-arrow { color: #cbd5e1; font-weight: 700; font-size: 1rem; flex-shrink: 0; }
+    .empty-chain-state { font-size: 0.83rem; color: #94a3b8; text-align: center; padding: 1.6rem 0.5rem; line-height: 1.5; }
 
-    if all_confirmed:
-        new_status = "Verified"
-        verified_by = current_user["full_name"]
-        verified_at = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
-        kept_flags = []
-    else:
-        new_status = "Flagged"
-        verified_by = None
-        verified_at = None
-        unchecked = [k for k, v in checks.items() if not v]
-        kept_flags.append(
-            f"Physical Verification Incomplete: field(s) not confirmed on-site — {', '.join(unchecked) if unchecked else 'none confirmed'}"
-        )
+    .tips-card ul { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 0.85rem; }
+    .tips-card li { display: flex; gap: 0.7rem; align-items: flex-start; font-size: 0.85rem; color: #475569; line-height: 1.45; }
+    .tips-card li .bullet {
+      width: 26px; height: 26px; border-radius: 8px; flex-shrink: 0; display: flex; align-items: center;
+      justify-content: center; font-size: 0.85rem; background: var(--primary-light); color: var(--primary); margin-top: 0.05rem;
+    }
 
-    conn.execute("""
-        UPDATE records SET
-            status = ?, verified_by = ?, verified_at = ?, verification_checklist = ?,
-            verification_notes = ?, validation_flags = ?, escalated = 0
-        WHERE id = ?
-    """, (new_status, verified_by, verified_at, json.dumps(checks), payload.notes or "", json.dumps(kept_flags), record_id))
-    conn.commit()
+    /* ---------------- Upload / Drop Area ---------------- */
+    .file-drop-area {
+      border: 2.5px dashed #c7d2fe; border-radius: var(--radius); padding: 2.6rem 1.5rem;
+      text-align: center; background: linear-gradient(180deg, #fafbff, #f5f6ff);
+      cursor: pointer; transition: all 0.22s ease; position: relative;
+    }
+    .file-drop-area:hover, .file-drop-area.drag-over {
+      border-color: var(--primary); background: var(--primary-light);
+      transform: scale(1.01);
+    }
+    .file-drop-area .drop-icon {
+      width: 56px; height: 56px; border-radius: 16px; margin: 0 auto 0.7rem;
+      background: linear-gradient(135deg, var(--primary), var(--accent2));
+      display: flex; align-items: center; justify-content: center; font-size: 1.6rem;
+      box-shadow: 0 10px 22px rgba(79,70,229,0.3);
+    }
+    .format-chips { display: flex; gap: 0.4rem; justify-content: center; margin-top: 0.8rem; flex-wrap: wrap; }
+    .format-chip { background: white; border: 1px solid var(--border); padding: 0.22rem 0.6rem; border-radius: 7px; font-size: 0.7rem; font-weight: 700; color: #64748b; }
+    .file-list { margin-top: 1rem; list-style: none; padding: 0; }
+    .file-item {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 0.65rem 0.95rem; background: #f1f5f9; border-radius: 10px;
+      margin-bottom: 0.5rem; font-size: 0.88rem; animation: fadeInUp 0.25s ease;
+      border: 1px solid transparent;
+    }
+    .file-item:hover { border-color: var(--border); }
+    .btn-remove-file { background: transparent; border: none; color: var(--danger); font-weight: bold; cursor: pointer; font-size: 1.1rem; transition: transform 0.15s ease; }
+    .btn-remove-file:hover { transform: scale(1.25); }
 
-    log_action(conn, current_user["username"], current_user["role"], "PHYSICAL_VERIFICATION",
-               f"Record #{record_id} physically verified by {current_user['full_name']} — Result: {new_status}")
+    .upload-side-note {
+      background: linear-gradient(160deg, #0b1120, #1e1b4b); color: #cbd5e1; border-radius: var(--radius);
+      padding: 1.5rem; font-size: 0.83rem; line-height: 1.6;
+    }
+    .upload-side-note h4 { color: white; margin: 0 0 0.6rem; font-size: 0.95rem; }
+    .upload-side-note .step { display: flex; gap: 0.65rem; margin-bottom: 0.8rem; }
+    .upload-side-note .step .num {
+      width: 22px; height: 22px; border-radius: 50%; background: rgba(255,255,255,0.12);
+      display: flex; align-items: center; justify-content: center; font-size: 0.72rem; font-weight: 700; color: white; flex-shrink: 0;
+    }
 
-    return {"message": "Verification recorded", "status": new_status, "verified_by": verified_by}
+    /* ---------------- Tables ---------------- */
+    table { width: 100%; border-collapse: collapse; background: white; border-radius: 13px; border: 1px solid var(--border); overflow: hidden; box-shadow: var(--shadow-sm); }
+    th, td { padding: 0.85rem 1rem; text-align: left; border-bottom: 1px solid var(--border); font-size: 0.87rem; }
+    th { background: #f8fafc; color: #475569; font-weight: 700; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; }
+    tbody tr { transition: background 0.15s ease; }
+    tbody tr:hover { background: #f8faff; }
+    tbody tr:last-child td { border-bottom: none; }
 
-@app.get("/api/records")
-def list_records(current_user: dict = Depends(get_current_user), conn: sqlite3.Connection = Depends(get_db)):
-    if current_user["role"] == "Citizen":
-        raise HTTPException(status_code=403, detail="Citizens cannot access the internal registry. Use /api/public/my-submissions.")
-    records = conn.execute("SELECT * FROM records ORDER BY id DESC").fetchall()
-    role = current_user["role"]
+    .badge-status { padding: 0.28rem 0.68rem; border-radius: 20px; font-size: 0.72rem; font-weight: 700; display: inline-flex; align-items: center; gap: 0.35rem; }
+    .badge-status::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+    .status-verified { background: #d1fae5; color: #059669; }
+    .status-pending { background: #dbeafe; color: #2563eb; }
+    .status-flagged { background: #fee2e2; color: #dc2626; }
+    .status-flagged::before { animation: pulseDot 1.6s infinite; }
+    .status-awaiting-physical-verification { background: #ede9fe; color: #7c3aed; }
+    .status-awaiting-physical-verification::before { animation: pulseDot 1.6s infinite; }
 
-    sanitized = []
-    for r in records:
-        rec = dict(r)
-        rec["validation_flags"] = json.loads(rec["validation_flags"]) if rec["validation_flags"] else []
-        rec["confidence_scores"] = json.loads(rec["confidence_scores"]) if rec["confidence_scores"] else {}
-        if role == "Clerk":
-            rec["owner_name"] = "[RESTRICTED - OFFICER ONLY]"
-            rec["seller_name"] = "[RESTRICTED]"
-            rec["buyer_name"] = "[RESTRICTED]"
-            rec["survey_number"] = "[RESTRICTED]"
-            rec["khasra_number"] = "[RESTRICTED]"
-            rec["khata_number"] = "[RESTRICTED]"
-            rec["serial_number"] = "[RESTRICTED]"
-            rec["consideration_amount"] = None
-            rec["raw_text"] = "[RESTRICTED]"
-        sanitized.append(rec)
-    return sanitized
+    .escalation-tag, .conflict-tag { font-size: 0.68rem; font-weight: 800; padding: 0.22rem 0.6rem; border-radius: 20px; display: inline-flex; align-items: center; gap: 0.3rem; white-space: nowrap; }
+    .escalation-tag { background: #fee2e2; color: var(--danger); }
+    .escalation-tag::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: pulseDot 1.6s infinite; }
+    .conflict-tag { background: #fef3c7; color: var(--warning); }
 
-@app.get("/api/timeline/chains")
-def get_ownership_chains(current_user: dict = Depends(get_current_user), conn: sqlite3.Connection = Depends(get_db)):
-    rows = conn.execute("""
-        SELECT id, khasra_number, village, district, seller_name, buyer_name, registration_date, status
-        FROM records
-        WHERE khasra_number IS NOT NULL AND TRIM(khasra_number) != ''
-          AND village IS NOT NULL AND TRIM(village) != ''
-        ORDER BY id
-    """).fetchall()
+    .deadline-chip { font-size: 0.72rem; font-weight: 700; color: #475569; background: #f1f5f9; padding: 0.22rem 0.6rem; border-radius: 20px; display: inline-block; white-space: nowrap; }
+    .deadline-chip.deadline-urgent { background: #fef3c7; color: #b45309; }
+    .deadline-chip.deadline-overdue { background: #fee2e2; color: var(--danger); }
 
-    groups: Dict[tuple, List[dict]] = {}
-    for r in rows:
-        rec = dict(r)
-        key = (
-            (rec["khasra_number"] or "").strip().lower(),
-            (rec["village"] or "").strip().lower(),
-            (rec["district"] or "").strip().lower(),
-        )
-        groups.setdefault(key, []).append(rec)
+    .modal-box.modal-box-sm { width: 620px; }
+    .checklist-item { display: flex; align-items: flex-start; gap: 0.7rem; padding: 0.65rem 0; border-bottom: 1px solid var(--border); font-size: 0.86rem; }
+    .checklist-item:last-child { border-bottom: none; }
+    .checklist-item input[type="checkbox"] { width: 18px; height: 18px; margin-top: 2px; accent-color: var(--primary); flex-shrink: 0; cursor: pointer; }
+    .checklist-item label { flex: 1; cursor: pointer; }
+    .checklist-item .field-value { color: #64748b; font-size: 0.78rem; display: block; margin-top: 0.15rem; }
+    .verified-stamp { display: flex; align-items: center; gap: 0.6rem; background: #f0fdf9; border: 1px solid #bbf7d0; border-radius: 12px; padding: 0.8rem 1rem; font-size: 0.83rem; color: #166534; margin-top: 0.9rem; }
+    .verified-stamp b { color: var(--success); }
+    .submitter-note { display: flex; align-items: center; gap: 0.5rem; font-size: 0.78rem; color: #94a3b8; margin-bottom: 1rem; }
+    .status-ready { background: #f1f5f9; color: #475569; }
+    .badge-flag { background: #fef3c7; color: var(--warning); padding: 0.22rem 0.55rem; border-radius: 6px; font-weight: 700; font-size: 0.74rem; }
+    .badge-type { background: #ede9fe; color: #6d28d9; padding: 0.18rem 0.55rem; border-radius: 6px; font-size: 0.7rem; font-weight: 700; }
 
-    def sort_key(rec):
-        d = rec.get("registration_date")
-        if d:
-            try:
-                return (0, datetime.strptime(d, "%Y-%m-%d"))
-            except ValueError:
-                pass
-        return (1, datetime.min)
+    /* ---------------- Buttons ---------------- */
+    .btn {
+      background: linear-gradient(135deg, var(--primary), #4338ca);
+      color: white; border: none; padding: 0.68rem 1.3rem; border-radius: 10px;
+      cursor: pointer; font-weight: 600; font-size: 0.88rem;
+      transition: transform 0.15s ease, box-shadow 0.15s ease; box-shadow: 0 4px 12px rgba(79,70,229,0.28);
+    }
+    .btn:hover { transform: translateY(-1px); box-shadow: 0 6px 18px rgba(79,70,229,0.38); }
+    .btn:active { transform: translateY(0); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none; }
+    .btn-sm { padding: 0.4rem 0.8rem; font-size: 0.78rem; border-radius: 7px; }
+    .btn-danger-sm { background: var(--danger); color: white; border: none; padding: 0.35rem 0.7rem; font-size: 0.78rem; border-radius: 7px; cursor: pointer; transition: transform 0.15s ease; }
+    .btn-danger-sm:hover { transform: translateY(-1px); }
+    .btn-outline-sm { background: white; color: var(--primary); border: 1.5px solid var(--primary); padding: 0.33rem 0.7rem; font-size: 0.78rem; border-radius: 7px; cursor: pointer; margin-right: 0.35rem; transition: all 0.15s ease; }
+    .btn-outline-sm:hover { background: var(--primary-light); }
 
-    chains = []
-    for key, recs in groups.items():
-        if len(recs) < 2:
-            continue  # only show land parcels with an actual resale history
-        recs_sorted = sorted(recs, key=sort_key)
+    .chip-row { display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap; }
+    .filter-chip {
+      background: white; border: 1.5px solid var(--border); padding: 0.4rem 0.9rem; border-radius: 20px;
+      font-size: 0.8rem; font-weight: 600; color: #475569; cursor: pointer; transition: all 0.15s ease;
+    }
+    .filter-chip:hover { border-color: var(--primary); color: var(--primary); }
+    .filter-chip.active { background: linear-gradient(135deg, var(--primary), #4338ca); color: white; border-color: transparent; box-shadow: 0 4px 12px rgba(79,70,229,0.3); }
 
-        hops = []
-        has_break = False
-        for i, rec in enumerate(recs_sorted):
-            continuity_ok = True
-            if i > 0:
-                prev_buyer = (recs_sorted[i - 1].get("buyer_name") or "").strip().lower()
-                cur_seller = (rec.get("seller_name") or "").strip().lower()
-                if prev_buyer and cur_seller and prev_buyer != cur_seller:
-                    continuity_ok = False
-                    has_break = True
-            hops.append({
-                "record_id": rec["id"],
-                "seller": rec.get("seller_name") or "Unknown",
-                "buyer": rec.get("buyer_name") or "Unknown",
-                "date": rec.get("registration_date"),
-                "status": rec.get("status"),
-                "continuity_ok": continuity_ok,
-            })
+    .search-wrap { position: relative; max-width: 360px; margin-bottom: 1rem; }
+    .search-wrap input {
+      width: 100%; padding: 0.68rem 0.9rem 0.68rem 2.3rem; border: 1.5px solid var(--border); border-radius: 10px;
+      font-size: 0.88rem; font-family: inherit; background: white; transition: all 0.2s ease;
+    }
+    .search-wrap input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 4px rgba(79,70,229,0.12); }
+    .search-wrap .sic { position: absolute; left: 0.8rem; top: 50%; transform: translateY(-50%); color: #94a3b8; font-size: 0.9rem; }
 
-        chains.append({
-            "khasra_number": recs_sorted[0]["khasra_number"],
-            "village": recs_sorted[0]["village"],
-            "district": recs_sorted[0]["district"],
-            "hops": hops,
-            "total_transfers": len(hops),
-            "has_break": has_break,
-            "last_updated_id": max(r["id"] for r in recs_sorted),
-        })
+    .empty-state { text-align: center; padding: 2.4rem 1rem; color: #94a3b8; }
+    .empty-state .ic { font-size: 2.2rem; margin-bottom: 0.5rem; display: block; opacity: 0.7; }
 
-    chains.sort(key=lambda c: c["last_updated_id"], reverse=True)
-    chains = chains[:8]
+    /* ---------------- Field Confidence Indicators ---------------- */
+    .field-uncertain { border: 2px solid var(--danger) !important; background: #fff5f5 !important; animation: fadeIn 0.3s ease; }
+    .field-certain { border: 1.5px solid var(--success) !important; background: #f0fdf9 !important; }
+    .ci-low { color: var(--danger); font-size: 0.7rem; font-weight: 700; margin-left: 0.3rem; }
+    .ci-high { color: var(--success); font-size: 0.7rem; font-weight: 700; margin-left: 0.3rem; }
 
-    if current_user["role"] == "Clerk":
-        for c in chains:
-            for h in c["hops"]:
-                h["seller"] = "[RESTRICTED]"
-                h["buyer"] = "[RESTRICTED]"
+    .identity-section {
+      border: 1px solid var(--border); border-radius: 13px; padding: 0.95rem 1rem;
+      margin-bottom: 0.85rem; background: #fafbfe; transition: box-shadow 0.2s ease;
+    }
+    .identity-section:hover { box-shadow: var(--shadow-sm); }
+    .identity-section h4 { margin: 0 0 0.65rem 0; color: var(--primary); font-size: 0.86rem; font-weight: 700; border-bottom: 1px solid var(--border); padding-bottom: 0.4rem; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; }
+    .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.6rem; }
 
-    return chains
+    /* ---------------- Modal / Split View ---------------- */
+    .modal {
+      position: fixed; inset: 0; background: rgba(11,17,32,0.68); backdrop-filter: blur(4px);
+      display: flex; align-items: center; justify-content: center; z-index: 100;
+      animation: fadeIn 0.2s ease;
+    }
+    .modal-box {
+      background: white; padding: 1.7rem; border-radius: 18px;
+      width: 1240px; max-width: 96%; max-height: 94vh; overflow-y: auto;
+      box-shadow: var(--shadow-lg); animation: popIn 0.28s cubic-bezier(.2,.9,.3,1.2);
+    }
+    .split-view { display: grid; grid-template-columns: 1.05fr 1fr; gap: 1.2rem; }
+    .doc-viewer-box {
+      background: #0b1120; border: 1px solid var(--border); border-radius: 13px;
+      padding: 0.5rem; text-align: center; height: 600px; overflow: hidden;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .doc-viewer-box iframe, .doc-viewer-box img { width: 100%; height: 100%; object-fit: contain; border: none; background: white; border-radius: 6px; }
 
-@app.get("/api/records/{record_id}/file")
-def get_record_file(
-    record_id: int,
-    current_user: dict = Depends(get_current_user),
-    conn: sqlite3.Connection = Depends(get_db)
-):
-    record = conn.execute("SELECT file_path, filename, submitted_by_user_id FROM records WHERE id = ?", (record_id,)).fetchone()
-    if not record:
-        raise HTTPException(status_code=404, detail="Record not found")
-    if current_user["role"] == "Citizen" and record["submitted_by_user_id"] != current_user["id"]:
-        raise HTTPException(status_code=403, detail="You can only view files from your own submissions.")
-    if not os.path.exists(record["file_path"]):
-        raise HTTPException(status_code=404, detail="File missing from storage")
-    return FileResponse(record["file_path"], filename=record["filename"])
+    /* ---------------- Misc: spinner, toasts, skeleton ---------------- */
+    .spinner {
+      width: 16px; height: 16px; border: 2.5px solid rgba(255,255,255,0.4);
+      border-top-color: white; border-radius: 50%; display: inline-block;
+      animation: spin 0.7s linear infinite; margin-right: 0.5rem; vertical-align: -2px;
+    }
+    .skeleton-row td {
+      background: linear-gradient(90deg, #f1f5f9 25%, #e9edf3 37%, #f1f5f9 63%);
+      background-size: 800px 100%; animation: shimmer 1.4s infinite linear;
+      color: transparent; border-radius: 4px;
+    }
 
-class RecordUpdatePayload(BaseModel):
-    district: Optional[str] = None
-    tehsil: Optional[str] = None
-    village: Optional[str] = None
-    khasra_number: Optional[str] = None
-    khata_number: Optional[str] = None
-    plot_number: Optional[str] = None
-    property_id: Optional[str] = None
-    owner_name: str
-    seller_name: Optional[str] = None
-    buyer_name: Optional[str] = None
-    share_hissa: Optional[str] = None
-    total_area: Optional[float] = None
-    land_use: Optional[str] = None
-    boundaries_desc: Optional[str] = None
-    consideration_amount: Optional[float] = None
-    registration_date: Optional[str] = None
-    mutation_date: Optional[str] = None
-    serial_number: Optional[str] = None
-    document_type: Optional[str] = None
-    status: str
+    #toast-stack {
+      position: fixed; top: 1.2rem; right: 1.2rem; z-index: 999;
+      display: flex; flex-direction: column; gap: 0.6rem; max-width: 340px;
+    }
+    .toast {
+      background: white; border-radius: 12px; padding: 0.85rem 1rem;
+      box-shadow: var(--shadow-lg); border-left: 4px solid var(--primary);
+      font-size: 0.86rem; animation: slideInRight 0.3s ease; display: flex; gap: 0.6rem; align-items: flex-start;
+    }
+    .toast.success { border-left-color: var(--success); }
+    .toast.error { border-left-color: var(--danger); }
+    .toast.warning { border-left-color: var(--warning); }
+    .toast .toast-icon { font-size: 1.1rem; }
+    .toast.hide { animation: slideOutRight 0.25s ease forwards; }
+  </style>
+</head>
+<body>
 
-@app.put("/api/records/{record_id}")
-def update_record(
-    record_id: int,
-    payload: RecordUpdatePayload,
-    current_user: dict = Depends(get_current_user),
-    conn: sqlite3.Connection = Depends(get_db)
-):
-    if current_user["role"] not in ["Admin", "Revenue Officer"]:
-        raise HTTPException(status_code=403, detail="Permission denied")
+  <div id="toast-stack"></div>
 
-    flags = run_validation_rules(payload.dict(), conn, current_record_id=record_id)
-    final_status = payload.status
+  <!-- Login -->
+  <div id="auth-panel" class="auth-container">
+    <div class="auth-visual">
+      <div class="auth-blob b1"></div>
+      <div class="auth-blob b2"></div>
+      <div class="auth-blob b3"></div>
+      <div class="auth-visual-content">
+        <span class="tag">🏛️ Department of Land Resources</span>
+        <h1>Digitize, verify & <span>secure</span> every land record.</h1>
+        <p class="lead">BharatVault uses OCR extraction and automated validation rules to turn scanned deeds into a trustworthy, searchable land registry — with a human always in the loop.</p>
+        <div class="auth-feature-list">
+          <div class="auth-feature"><span class="ic">📄</span> Instant OCR extraction of Khasra, Khata & ownership fields</div>
+          <div class="auth-feature"><span class="ic">🛡️</span> Automated duplicate & consistency validation rules</div>
+          <div class="auth-feature"><span class="ic">✅</span> Side-by-side soft-copy verification workflow</div>
+          <div class="auth-feature"><span class="ic">🙋</span> Citizen self-service submission with physical verification</div>
+          <div class="auth-feature"><span class="ic">🔐</span> Full role-based access with a complete audit trail</div>
+        </div>
+        <div class="auth-stats">
+          <div><b>100%</b><span>Digital Trail</span></div>
+          <div><b>5</b><span>Validation Rules</span></div>
+          <div><b>24/7</b><span>Access</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="auth-form-side">
+      <div class="auth-card">
+        <div class="auth-logo">🏛️</div>
+        <h2>BharatVault</h2>
+        <p class="sub">Intelligent Land Record & Verification System</p>
 
-    conn.execute("""
-        UPDATE records SET
-            district = ?, tehsil = ?, village = ?, khasra_number = ?, khata_number = ?,
-            plot_number = ?, property_id = ?, owner_name = ?, seller_name = ?, buyer_name = ?,
-            share_hissa = ?, total_area = ?, land_use = ?, boundaries_desc = ?,
-            consideration_amount = ?, registration_date = ?, mutation_date = ?, serial_number = ?,
-            document_type = ?, status = ?, validation_flags = ?
-        WHERE id = ?
-    """, (
-        payload.district,
-        payload.tehsil,
-        payload.village,
-        payload.khasra_number,
-        payload.khata_number,
-        payload.plot_number,
-        payload.property_id,
-        payload.owner_name,
-        payload.seller_name,
-        payload.buyer_name,
-        payload.share_hissa,
-        payload.total_area,
-        payload.land_use,
-        payload.boundaries_desc,
-        payload.consideration_amount,
-        payload.registration_date,
-        payload.mutation_date,
-        payload.serial_number,
-        payload.document_type or "Sale Deed",
-        final_status,
-        json.dumps([] if final_status == "Verified" else flags),
-        record_id
-    ))
-    conn.commit()
-    log_action(conn, current_user["username"], current_user["role"], "VERIFY/UPDATE", f"Record #{record_id} saved as {final_status}")
-    return {"message": "Record saved successfully", "status": final_status}
+        <div class="auth-mode-toggle">
+          <button type="button" class="auth-mode-btn active" id="mode-staff-btn" onclick="setAuthMode('staff')">🏛️ Staff Sign In</button>
+          <button type="button" class="auth-mode-btn" id="mode-citizen-btn" onclick="setAuthMode('citizen')">🙋 Citizen Portal</button>
+        </div>
 
-class CreateUserPayload(BaseModel):
-    username: str
-    full_name: str
-    password: str
-    role: str
+        <div id="staff-auth-block">
+          <form id="login-form">
+            <div class="form-group"><label>User ID</label><input type="text" id="login-username" required autocomplete="username"></div>
+            <div class="form-group"><label>Password</label><input type="password" id="login-password" required autocomplete="current-password"></div>
+            <button type="submit" class="btn" style="width:100%;">Sign In</button>
+          </form>
+          <p class="auth-footnote">Secured access · Clerk, Revenue Officer & Admin roles</p>
+        </div>
 
-@app.post("/api/users")
-def create_new_user(payload: CreateUserPayload, current_user: dict = Depends(get_current_user), conn: sqlite3.Connection = Depends(get_db)):
-    if current_user["role"] != "Admin":
-        raise HTTPException(status_code=403, detail="Access denied. Admins only.")
-    existing = conn.execute("SELECT id FROM users WHERE username = ?", (payload.username,)).fetchone()
-    if existing:
-        raise HTTPException(status_code=400, detail="Username already exists")
-    conn.execute(
-        "INSERT INTO users (username, full_name, hashed_password, role) VALUES (?, ?, ?, ?)",
-        (payload.username.strip(), payload.full_name.strip(), hash_password(payload.password), payload.role)
-    )
-    conn.commit()
-    log_action(conn, current_user["username"], current_user["role"], "USER_CREATE", f"Created user '{payload.username}' ({payload.role})")
-    return {"message": "User registered successfully"}
+        <div id="citizen-auth-block" class="hidden">
+          <div class="citizen-subtabs">
+            <span class="citizen-subtab active" id="citizen-signin-tab" onclick="setCitizenSubTab('signin')">Sign In</span>
+            <span class="citizen-subtab" id="citizen-register-tab" onclick="setCitizenSubTab('register')">New here? Register</span>
+          </div>
 
-@app.get("/api/users")
-def list_users(current_user: dict = Depends(get_current_user), conn: sqlite3.Connection = Depends(get_db)):
-    if current_user["role"] != "Admin":
-        raise HTTPException(status_code=403, detail="Access denied.")
-    return [dict(u) for u in conn.execute("SELECT id, username, full_name, role, created_at FROM users ORDER BY id DESC").fetchall()]
+          <form id="citizen-login-form" class="citizen-subpanel">
+            <div class="form-group"><label>Username</label><input type="text" id="citizen-login-username" required autocomplete="username"></div>
+            <div class="form-group"><label>Password</label><input type="password" id="citizen-login-password" required autocomplete="current-password"></div>
+            <button type="submit" class="btn" style="width:100%;">Sign In</button>
+          </form>
 
-@app.delete("/api/users/{user_id}")
-def delete_user(user_id: int, current_user: dict = Depends(get_current_user), conn: sqlite3.Connection = Depends(get_db)):
-    if current_user["role"] != "Admin":
-        raise HTTPException(status_code=403, detail="Access denied.")
-    conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
-    conn.commit()
-    log_action(conn, current_user["username"], current_user["role"], "USER_DELETE", f"Deleted user ID {user_id}")
-    return {"message": "User deleted"}
+          <form id="citizen-register-form" class="citizen-subpanel hidden">
+            <div class="form-group"><label>Full Name</label><input type="text" id="citizen-reg-fullname" required></div>
+            <div class="form-group"><label>Mobile Number</label><input type="tel" id="citizen-reg-phone" placeholder="10-digit mobile" required></div>
+            <div class="form-group"><label>Choose Username</label><input type="text" id="citizen-reg-username" required autocomplete="username"></div>
+            <div class="form-group"><label>Choose Password</label><input type="password" id="citizen-reg-password" required autocomplete="new-password"></div>
+            <button type="submit" class="btn" style="width:100%;">Create My Account</button>
+          </form>
+          <p class="auth-footnote">Self-registration for landowners — no office visit needed to get started. Every submission is physically checked by a Revenue Officer before it enters official records.</p>
+        </div>
+      </div>
+    </div>
+  </div>
 
-@app.get("/api/audit-logs")
-def get_audit_logs(current_user: dict = Depends(get_current_user), conn: sqlite3.Connection = Depends(get_db)):
-    if current_user["role"] != "Admin":
-        raise HTTPException(status_code=403, detail="Access denied.")
-    return [dict(row) for row in conn.execute("SELECT * FROM audit_logs ORDER BY id DESC LIMIT 100").fetchall()]
+  <!-- Shell -->
+  <div id="app-shell" class="app-shell hidden">
+    <aside class="sidebar">
+      <div class="sidebar-brand">
+        <div class="mark">🏛️</div>
+        <div>
+          <h1>BharatVault</h1>
+          <span>DOLR Land Portal</span>
+        </div>
+      </div>
+      <div class="sidebar-section-label">Workspace</div>
+      <ul class="sidebar-menu" id="staff-workspace-menu">
+        <li class="sidebar-item active" onclick="showTab('dashboard-view', event)"><span class="ic">📊</span> Dashboard</li>
+        <li class="sidebar-item" onclick="showTab('upload-view', event)"><span class="ic">📥</span> Upload Files</li>
+        <li class="sidebar-item" onclick="showTab('records-view', event)"><span class="ic">📑</span> All Records</li>
+      </ul>
+      <ul class="sidebar-menu hidden" id="citizen-workspace-menu">
+        <li id="nav-citizen-submit" class="sidebar-item active" onclick="showTab('citizen-submit-view', event)"><span class="ic">📤</span> Submit Land Record</li>
+        <li id="nav-citizen-mine" class="sidebar-item" onclick="showTab('citizen-my-submissions-view', event)"><span class="ic">🗂️</span> My Submissions</li>
+      </ul>
+      <div id="verification-section-label" class="sidebar-section-label hidden">Verification</div>
+      <ul class="sidebar-menu">
+        <li id="nav-public-queue" class="sidebar-item hidden" onclick="showTab('public-queue-view', event)"><span class="ic">🧾</span> Public Submissions</li>
+      </ul>
+      <div id="admin-section-label" class="sidebar-section-label hidden">Administration</div>
+      <ul class="sidebar-menu">
+        <li id="nav-users" class="sidebar-item hidden" onclick="showTab('users-view', event)"><span class="ic">👥</span> User Accounts</li>
+        <li id="nav-audit" class="sidebar-item hidden" onclick="showTab('audit-view', event)"><span class="ic">🛡️</span> Audit Log</li>
+      </ul>
+      <div class="sidebar-spacer"></div>
+      <div class="sidebar-help">
+        <b>💡 Quick tip</b>
+        Click <em>Double-Check</em> on any record to compare it against the original soft copy before approving.
+      </div>
+      <div class="sidebar-footer">
+        <div class="user-info">
+          <div class="avatar" id="display-avatar">U</div>
+          <div>
+            <div class="name" id="display-name">User</div>
+            <div class="role" id="display-role">Role</div>
+          </div>
+        </div>
+        <button onclick="logout()" class="btn-logout">Exit</button>
+      </div>
+    </aside>
 
-@app.get("/")
-def serve_frontend():
-    if os.path.exists("index.html"):
-        return FileResponse("index.html")
-    raise HTTPException(status_code=404, detail="index.html not found next to main.py")
+    <div class="app-main-col">
+      <div class="topbar">
+        <div>
+          <div class="topbar-greeting"><span class="wave">👋</span> <span id="greeting-text">Welcome back</span></div>
+          <div class="topbar-sub">Here's what's happening with the land registry today.</div>
+        </div>
+        <div class="topbar-right">
+          <span class="status-pill">● System Operational</span>
+          <div class="live-clock"><span class="dot"></span><span id="live-clock-text">--:--:--</span></div>
+        </div>
+      </div>
 
-if os.path.isdir("static"):
-    app.mount("/static", StaticFiles(directory="static"), name="static")
+      <main class="content-area">
+      <!-- 1. Dashboard View -->
+      <section id="dashboard-view" class="tab-panel">
+        <div class="hero-banner">
+          <div>
+            <h2>Land Identity Verification Pipeline</h2>
+            <p>Every uploaded deed is OCR-scanned, auto-validated against duplicate & consistency rules, and routed for human sign-off — keeping your registry accurate and audit-ready.</p>
+          </div>
+          <div class="hero-badge"><div class="n" id="hero-total">0</div><div class="l">Total Records</div></div>
+        </div>
+
+        <div class="metrics-grid">
+          <div class="metric-card mc-total"><div class="icon-bubble">📁</div><div><div class="num" id="m-total">0</div><div class="label">Total Records</div></div></div>
+          <div class="metric-card mc-flagged"><div class="icon-bubble">🚨</div><div><div class="num" id="m-flagged" style="color:var(--danger);">0</div><div class="label">Flagged Issues</div></div></div>
+          <div class="metric-card mc-pending"><div class="icon-bubble">⏳</div><div><div class="num" id="m-pending" style="color:var(--accent);">0</div><div class="label">Pending Verification</div></div></div>
+          <div class="metric-card mc-verified"><div class="icon-bubble">✅</div><div><div class="num" id="m-verified" style="color:var(--success);">0</div><div class="label">Verified Records</div></div></div>
+        </div>
+
+        <div class="insight-row">
+          <div class="card chart-card">
+            <div class="donut-wrap">
+              <svg viewBox="0 0 220 220" width="148" height="148">
+                <circle cx="110" cy="110" r="92" fill="none" stroke="#eef1f7" stroke-width="20"></circle>
+                <circle id="donut-flagged" cx="110" cy="110" r="92" fill="none" stroke="#ef4444" stroke-width="20" stroke-dasharray="0 578" stroke-linecap="round"></circle>
+                <circle id="donut-pending" cx="110" cy="110" r="92" fill="none" stroke="#3b82f6" stroke-width="20" stroke-dasharray="0 578" stroke-linecap="round"></circle>
+                <circle id="donut-verified" cx="110" cy="110" r="92" fill="none" stroke="#10b981" stroke-width="20" stroke-dasharray="0 578" stroke-linecap="round"></circle>
+              </svg>
+              <div class="donut-center"><div class="n" id="donut-center-num">0</div><div class="l">Records</div></div>
+            </div>
+            <div class="legend">
+              <div class="legend-item"><span class="sw" style="background:#ef4444;"></span> Flagged <b id="legend-flagged">0</b></div>
+              <div class="legend-item"><span class="sw" style="background:#3b82f6;"></span> Pending <b id="legend-pending">0</b></div>
+              <div class="legend-item"><span class="sw" style="background:#10b981;"></span> Verified <b id="legend-verified">0</b></div>
+            </div>
+          </div>
+          <div class="card tips-card">
+            <h3>🧭 Verification Playbook</h3>
+            <ul>
+              <li><span class="bullet">1</span> Ingest scanned deeds from the <b>Upload Files</b> tab — OCR runs automatically and fields are auto-classified.</li>
+              <li><span class="bullet">2</span> Records with validation issues land in <b>Flagged Documents</b> below — open <em>Double-Check</em> to compare against the original soft copy.</li>
+              <li><span class="bullet">3</span> Correct any low-confidence field (highlighted in red), then <b>Approve as Verified</b> or keep it <b>Flagged</b> for further review.</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="card timeline-card">
+          <div class="timeline-card-head">
+            <h3>🔗 Land Ownership Timeline</h3>
+            <span class="desc">Chain of custody across resold parcels — A → B → C → D</span>
+          </div>
+          <div id="ownership-chains" class="chain-list">
+            <div class="empty-chain-state">Loading ownership chains...</div>
+          </div>
+        </div>
+
+        <h3>🚨 Flagged Documents (Needs Verification)</h3>
+        <table id="dash-flagged-table" style="margin-bottom: 2rem;">
+          <thead><tr><th>ID</th><th>Village</th><th>Khasra #</th><th>Owner Name</th><th>Issues</th><th>Action</th></tr></thead>
+          <tbody></tbody>
+        </table>
+
+        <h3>⏳ Pending Documents</h3>
+        <table id="dash-pending-table" style="margin-bottom: 2rem;">
+          <thead><tr><th>ID</th><th>Village</th><th>Khasra #</th><th>Owner Name</th><th>Status</th><th>Action</th></tr></thead>
+          <tbody></tbody>
+        </table>
+
+        <h3>✅ Verified Documents</h3>
+        <table id="dash-verified-table">
+          <thead><tr><th>ID</th><th>Village</th><th>Khasra #</th><th>Owner Name</th><th>Status</th><th>Action</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </section>
+
+      <!-- 2. Upload Files with Staged Queue -->
+      <section id="upload-view" class="tab-panel hidden">
+        <div class="panel-header"><div><h2>Document Ingestion</h2><div class="desc">Upload scanned deeds — OCR extraction and validation run automatically.</div></div></div>
+        <div style="display:grid; grid-template-columns: 1.3fr 1fr; gap: 1.4rem; max-width: 950px;">
+          <div class="card">
+            <p>Select land deeds/records to extract the complete Land Identity structure.</p>
+            <div class="file-drop-area" id="file-drop-area" onclick="document.getElementById('file-input').click()">
+              <div class="drop-icon">📁</div>
+              <p style="margin: 0; font-weight: 700;">Click or drag files here</p>
+              <small style="color: #94a3b8;">Accepts multiple PDFs, PNGs, JPGs</small>
+              <div class="format-chips">
+                <span class="format-chip">PDF</span><span class="format-chip">PNG</span><span class="format-chip">JPG</span><span class="format-chip">JPEG</span><span class="format-chip">TXT</span>
+              </div>
+              <input type="file" id="file-input" multiple accept=".pdf,.png,.jpg,.jpeg,.txt" style="display:none;" onchange="handleFileSelect(event)">
+            </div>
+            <ul id="staged-file-list" class="file-list"></ul>
+            <div style="margin-top: 1.2rem; display: flex; gap: 0.8rem; align-items: center;">
+              <button type="button" class="btn" id="upload-btn" onclick="submitFiles()" disabled>Ingest Selected Files</button>
+              <button type="button" class="btn" style="background:#64748b; box-shadow:none;" onclick="clearAllFiles()">Clear All</button>
+              <span id="upload-status" style="font-size:0.85rem; color:#64748b;"></span>
+            </div>
+          </div>
+          <div class="upload-side-note">
+            <h4>⚙️ What happens next</h4>
+            <div class="step"><span class="num">1</span> Each file is scanned with OCR to extract text and identify quality.</div>
+            <div class="step"><span class="num">2</span> Land identity fields (owner, khasra, area, dates...) are parsed out automatically.</div>
+            <div class="step"><span class="num">3</span> Duplicate & consistency checks run — clean records auto-verify, flagged ones need review.</div>
+            <div class="step"><span class="num">4</span> Everything lands in your <b>Dashboard</b>, ready to double-check.</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 3. All Records with Live Search -->
+      <section id="records-view" class="tab-panel hidden">
+        <div class="panel-header"><div><h2>Master Land Registry</h2><div class="desc">Search and filter every ingested record.</div></div></div>
+        <div class="search-wrap">
+          <span class="sic">🔍</span>
+          <input type="text" id="registry-search" placeholder="Search Khasra #, Village, or Owner..." oninput="filterRegistry()">
+        </div>
+        <div class="chip-row">
+          <span class="filter-chip active" data-status="all" onclick="setRegistryFilter('all', event)">All</span>
+          <span class="filter-chip" data-status="Flagged" onclick="setRegistryFilter('Flagged', event)">Flagged</span>
+          <span class="filter-chip" data-status="Pending Verification" onclick="setRegistryFilter('Pending Verification', event)">Pending</span>
+          <span class="filter-chip" data-status="Verified" onclick="setRegistryFilter('Verified', event)">Verified</span>
+        </div>
+        <table id="records-table">
+          <thead><tr><th>ID</th><th>Khasra #</th><th>Village</th><th>Owner Name</th><th>Total Area</th><th>Status</th><th>Action</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </section>
+
+      <!-- 4. User Accounts (Admin Only) -->
+      <section id="users-view" class="tab-panel hidden">
+        <div class="panel-header"><div><h2>User Management</h2><div class="desc">Create and manage Clerk, Revenue Officer & Admin accounts.</div></div></div>
+        <div class="card" style="max-width: 500px;">
+          <form id="create-user-form">
+            <div class="form-group"><label>Full Name</label><input type="text" id="new-user-fullname" required></div>
+            <div class="form-group"><label>Username</label><input type="text" id="new-user-username" required></div>
+            <div class="form-group"><label>Password</label><input type="password" id="new-user-password" required></div>
+            <div class="form-group">
+              <label>Role</label>
+              <select id="new-user-role">
+                <option value="Clerk">Clerk</option>
+                <option value="Revenue Officer">Revenue Officer</option>
+                <option value="Admin">Admin</option>
+              </select>
+            </div>
+            <button type="submit" class="btn">Register User</button>
+          </form>
+        </div>
+        <table id="users-table">
+          <thead><tr><th>Username</th><th>Full Name</th><th>Role</th><th>Action</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </section>
+
+      <!-- 5. Audit Log (Admin Only) -->
+      <section id="audit-view" class="tab-panel hidden">
+        <div class="panel-header"><div><h2>Security Audit Trail</h2><div class="desc">Full log of logins, uploads, verifications and admin actions.</div></div></div>
+        <table id="audit-table">
+          <thead><tr><th>Timestamp</th><th>User</th><th>Role</th><th>Action</th><th>Details</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </section>
+
+      <!-- 6. Public Submissions Queue (Officer / Admin only) -->
+      <section id="public-queue-view" class="tab-panel hidden">
+        <div class="panel-header"><div><h2>Public Submissions Queue</h2><div class="desc">Citizen-submitted land records awaiting on-site physical verification before entering the official registry.</div></div></div>
+        <table id="public-queue-table">
+          <thead><tr><th>ID</th><th>Land (Khasra · Village)</th><th>Submitted By</th><th>Claimed Owner</th><th>Deadline</th><th>Flags</th><th>Action</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </section>
+
+      <!-- 7. Citizen Portal: Submit -->
+      <section id="citizen-submit-view" class="tab-panel hidden">
+        <div class="panel-header"><div><h2>Submit Your Land Record</h2><div class="desc">Upload your deed for physical verification — it enters the official registry only after a Revenue Officer confirms it on-site.</div></div></div>
+        <div style="display:grid; grid-template-columns: 1.3fr 1fr; gap: 1.4rem; max-width: 950px;">
+          <div class="card">
+            <p>Upload a clear photo or scan of your sale deed / ownership document.</p>
+            <div class="file-drop-area" id="citizen-file-drop-area" onclick="document.getElementById('citizen-file-input').click()">
+              <div class="drop-icon">📁</div>
+              <p style="margin: 0; font-weight: 700;">Click or drag your document here</p>
+              <small style="color: #94a3b8;">Accepts PDF, PNG, JPG</small>
+              <div class="format-chips">
+                <span class="format-chip">PDF</span><span class="format-chip">PNG</span><span class="format-chip">JPG</span><span class="format-chip">JPEG</span>
+              </div>
+              <input type="file" id="citizen-file-input" multiple accept=".pdf,.png,.jpg,.jpeg,.txt" style="display:none;" onchange="handleCitizenFileSelect(event)">
+            </div>
+            <ul id="citizen-staged-file-list" class="file-list"></ul>
+            <div style="margin-top: 1.2rem; display: flex; gap: 0.8rem; align-items: center;">
+              <button type="button" class="btn" id="citizen-upload-btn" onclick="submitCitizenFiles()" disabled>Submit for Verification</button>
+              <button type="button" class="btn" style="background:#64748b; box-shadow:none;" onclick="clearAllCitizenFiles()">Clear All</button>
+              <span id="citizen-upload-status" style="font-size:0.85rem; color:#64748b;"></span>
+            </div>
+          </div>
+          <div class="upload-side-note">
+            <h4>⚙️ What happens next</h4>
+            <div class="step"><span class="num">1</span> Your document is OCR-scanned and your land details (owner, khasra, area...) are auto-read.</div>
+            <div class="step"><span class="num">2</span> It's placed in the Revenue Officer's queue with a fixed deadline for physical inspection.</div>
+            <div class="step"><span class="num">3</span> The officer visits / calls to confirm ownership, area, and boundaries in person.</div>
+            <div class="step"><span class="num">4</span> Once confirmed, it's marked <b>Verified</b> with the officer's name — visible to you under <b>My Submissions</b>.</div>
+            <div class="step"><span class="num">5</span> If two people claim the same land, both are held for verification — no submission is fast-tracked over another.</div>
+            <div class="step"><span class="num">6</span> If the deadline is missed, your case is automatically escalated to a senior authority.</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 8. Citizen Portal: My Submissions -->
+      <section id="citizen-my-submissions-view" class="tab-panel hidden">
+        <div class="panel-header"><div><h2>My Submissions</h2><div class="desc">Track the verification status of every land record you've submitted.</div></div></div>
+        <table id="citizen-submissions-table">
+          <thead><tr><th>ID</th><th>Land (Khasra · Village)</th><th>Status</th><th>Deadline</th><th>Verified By</th><th>Notes</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </section>
+
+      <!-- Physical Verification Checklist Modal (Officer / Admin) -->
+      <div id="checklist-modal" class="modal hidden">
+        <div class="modal-box modal-box-sm">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.4rem;">
+            <h3 style="margin:0;">🧾 Physical Verification Checklist</h3>
+            <button type="button" class="btn-sm" style="background:#64748b; box-shadow:none;" onclick="closeChecklistModal()">✕ Close</button>
+          </div>
+          <p class="submitter-note" id="checklist-context">Confirm each field on-site before approving this record.</p>
+          <div id="checklist-fields"></div>
+          <div class="form-group" style="margin-top:1rem;">
+            <label>Officer Notes (optional)</label>
+            <input type="text" id="checklist-notes" placeholder="e.g. Visited site on 14 Oct, met claimant in person...">
+          </div>
+          <div style="display:flex; gap:0.8rem; margin-top:1.2rem;">
+            <button type="button" class="btn" style="flex:1;" onclick="submitChecklist()">✅ Confirm & Mark Verified</button>
+            <button type="button" class="btn" style="flex:1; background:#64748b; box-shadow:none;" onclick="submitChecklist(true)">🚩 Save as Flagged (Discrepancy Found)</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Two-Panel Split Review Screen with Soft-Copy Viewer & Complete Land Identity -->
+      <div id="review-modal" class="modal hidden">
+        <div class="modal-box">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
+            <h3 style="margin:0;">Double-Check & Verify Record (Land Identity Architecture)</h3>
+            <button type="button" class="btn-sm" style="background:#64748b; box-shadow:none;" onclick="closeModal()">✕ Close</button>
+          </div>
+
+          <div class="split-view">
+            <!-- Left Panel: Authenticated Soft Copy Viewer -->
+            <div>
+              <h4 style="margin:0 0 0.5rem 0;">📄 Original Uploaded Soft Copy</h4>
+              <div class="doc-viewer-box" id="doc-preview-area">
+                <span style="color:#94a3b8;">Loading document preview...</span>
+              </div>
+            </div>
+
+            <!-- Right Panel: Full Grouped Land Identity Extraction Form -->
+            <div>
+              <h4 style="margin:0 0 0.5rem 0;">Extracted Land Identity Fields</h4>
+              <form id="verify-form">
+                <input type="hidden" id="edit-id">
+
+                <!-- 1. Location -->
+                <div class="identity-section">
+                  <h4>📍 Location</h4>
+                  <div class="grid-3">
+                    <div class="form-group">
+                      <label>District <span id="ci-district"></span></label>
+                      <input type="text" id="edit-district">
+                    </div>
+                    <div class="form-group">
+                      <label>Tehsil <span id="ci-tehsil"></span></label>
+                      <input type="text" id="edit-tehsil">
+                    </div>
+                    <div class="form-group">
+                      <label>Village / Locality <span id="ci-village"></span></label>
+                      <input type="text" id="edit-village">
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 2. Land Identifiers -->
+                <div class="identity-section">
+                  <h4>🔖 Land Identifiers</h4>
+                  <div class="grid-2">
+                    <div class="form-group">
+                      <label>Khasra No. <span id="ci-khasra"></span></label>
+                      <input type="text" id="edit-khasra">
+                    </div>
+                    <div class="form-group">
+                      <label>Khata No. <span id="ci-khata"></span></label>
+                      <input type="text" id="edit-khata">
+                    </div>
+                    <div class="form-group">
+                      <label>Plot No. <span id="ci-plot"></span></label>
+                      <input type="text" id="edit-plot">
+                    </div>
+                    <div class="form-group">
+                      <label>Property ID (Urban) <span id="ci-property-id"></span></label>
+                      <input type="text" id="edit-property-id">
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 3. Person / Holding -->
+                <div class="identity-section">
+                  <h4>👤 Person / Holding</h4>
+                  <div class="grid-3">
+                    <div class="form-group">
+                      <label>Recorded Holder (Owner) <span id="ci-owner"></span></label>
+                      <input type="text" id="edit-owner">
+                    </div>
+                    <div class="form-group">
+                      <label>Vendor / Seller <span id="ci-seller"></span></label>
+                      <input type="text" id="edit-seller">
+                    </div>
+                    <div class="form-group">
+                      <label>Share / Hissa <span id="ci-share"></span></label>
+                      <input type="text" id="edit-share">
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 4. Property Details -->
+                <div class="identity-section">
+                  <h4>📐 Property Details</h4>
+                  <div class="grid-3">
+                    <div class="form-group">
+                      <label>Total Area (Bigha) <span id="ci-area"></span></label>
+                      <input type="number" step="0.01" id="edit-area">
+                    </div>
+                    <div class="form-group">
+                      <label>Land Use / Classification <span id="ci-land-use"></span></label>
+                      <input type="text" id="edit-land-use">
+                    </div>
+                    <div class="form-group">
+                      <label>Consideration (Rs.) <span id="ci-consideration"></span></label>
+                      <input type="number" step="0.01" id="edit-consideration">
+                    </div>
+                  </div>
+                  <div class="form-group" style="margin-bottom:0;">
+                    <label>Boundaries / Description <span id="ci-boundaries"></span></label>
+                    <input type="text" id="edit-boundaries">
+                  </div>
+                </div>
+
+                <!-- 5. History & Deeds -->
+                <div class="identity-section">
+                  <h4>📜 History & Registration</h4>
+                  <div class="grid-3">
+                    <div class="form-group">
+                      <label>Registration Date <span id="ci-reg-date"></span></label>
+                      <input type="date" id="edit-reg-date">
+                    </div>
+                    <div class="form-group">
+                      <label>Mutation Date <span id="ci-mut-date"></span></label>
+                      <input type="date" id="edit-mut-date">
+                    </div>
+                    <div class="form-group">
+                      <label>Serial / Deed No. <span id="ci-serial"></span></label>
+                      <input type="text" id="edit-serial">
+                    </div>
+                  </div>
+                </div>
+
+                <div style="display:flex; gap:0.6rem; margin-top:1rem;">
+                  <button type="button" class="btn" style="background:linear-gradient(135deg, var(--warning), #d97706); flex:1;" onclick="saveRecord('Flagged')">Save as Flagged</button>
+                  <button type="button" class="btn" style="background:linear-gradient(135deg, var(--success), #059669); flex:1;" onclick="saveRecord('Verified')">Approve as Verified</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+      </div>
+      </main>
+    </div>
+  </div>
+
+  <script>
+    let authToken = localStorage.getItem("bv_token") || "";
+    let userRole = localStorage.getItem("bv_role") || "";
+    let userFullName = localStorage.getItem("bv_fullname") || "";
+    let allRecords = [];
+    let selectedFiles = [];
+    let citizenSelectedFiles = [];
+    let currentBlobUrl = null;
+    let registryStatusFilter = "all";
+    let currentChecklistRecordId = null;
+
+    const headers = () => ({ "Authorization": `Bearer ${authToken}`, "Content-Type": "application/json" });
+
+    // ---------------- Toast notifications (replaces alert()) ----------------
+    function toast(message, type = "info", timeoutMs = 4200) {
+      const stack = document.getElementById("toast-stack");
+      const el = document.createElement("div");
+      el.className = `toast ${type}`;
+      const icons = { success: "✅", error: "⚠️", warning: "🔶", info: "ℹ️" };
+      el.innerHTML = `<span class="toast-icon">${icons[type] || icons.info}</span><span>${message}</span>`;
+      stack.appendChild(el);
+      setTimeout(() => {
+        el.classList.add("hide");
+        setTimeout(() => el.remove(), 250);
+      }, timeoutMs);
+    }
+
+    // ---------------- Animated counters for dashboard metrics ----------------
+    function animateCount(elId, target) {
+      const el = document.getElementById(elId);
+      if (!el) return;
+      const start = parseInt(el.innerText) || 0;
+      if (start === target) { el.innerText = target; return; }
+      const duration = 450;
+      const startTime = performance.now();
+      function step(now) {
+        const progress = Math.min((now - startTime) / duration, 1);
+        const eased = 1 - Math.pow(1 - progress, 3);
+        el.innerText = Math.round(start + (target - start) * eased);
+        if (progress < 1) requestAnimationFrame(step);
+      }
+      requestAnimationFrame(step);
+    }
+
+    // ---------------- Live clock + greeting ----------------
+    function tickClock() {
+      const now = new Date();
+      const el = document.getElementById("live-clock-text");
+      if (el) el.innerText = now.toLocaleTimeString("en-IN", { hour12: true });
+      const greetEl = document.getElementById("greeting-text");
+      if (greetEl) {
+        const h = now.getHours();
+        const time = h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening";
+        const name = userRole ? `, ${userRole}` : "";
+        greetEl.innerText = `${time}${name}`;
+      }
+    }
+    setInterval(tickClock, 1000);
+
+    // ---------------- Dashboard status donut chart ----------------
+    function renderStatusChart(flaggedN, pendingN, verifiedN) {
+      const total = flaggedN + pendingN + verifiedN;
+      const circumference = 2 * Math.PI * 92;
+      document.getElementById("donut-center-num").innerText = total;
+
+      const segs = [
+        { id: "donut-flagged", value: flaggedN },
+        { id: "donut-pending", value: pendingN },
+        { id: "donut-verified", value: verifiedN }
+      ];
+      let offsetAccum = 0;
+      segs.forEach(seg => {
+        const frac = total > 0 ? seg.value / total : 0;
+        const len = frac * circumference;
+        const el = document.getElementById(seg.id);
+        if (!el) return;
+        el.setAttribute("stroke-dasharray", `${len} ${circumference - len}`);
+        el.setAttribute("stroke-dashoffset", -offsetAccum);
+        offsetAccum += len;
+      });
+
+      document.getElementById("legend-flagged").innerText = flaggedN;
+      document.getElementById("legend-pending").innerText = pendingN;
+      document.getElementById("legend-verified").innerText = verifiedN;
+      document.getElementById("hero-total").innerText = total;
+    }
+
+    document.addEventListener("DOMContentLoaded", () => {
+      tickClock();
+      if (authToken) setupApp();
+      document.getElementById("login-form").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const fd = new FormData();
+        fd.append("username", document.getElementById("login-username").value);
+        fd.append("password", document.getElementById("login-password").value);
+        const res = await fetch("/api/auth/token", { method: "POST", body: fd });
+        if (res.ok) {
+          const data = await res.json();
+          authToken = data.access_token;
+          userRole = data.role;
+          userFullName = data.full_name;
+          localStorage.setItem("bv_token", authToken);
+          localStorage.setItem("bv_role", userRole);
+          localStorage.setItem("bv_fullname", userFullName);
+          setupApp();
+        } else {
+          toast("Invalid login credentials.", "error");
+        }
+      });
+
+      document.getElementById("citizen-login-form").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const fd = new FormData();
+        fd.append("username", document.getElementById("citizen-login-username").value);
+        fd.append("password", document.getElementById("citizen-login-password").value);
+        const res = await fetch("/api/auth/token", { method: "POST", body: fd });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.role !== "Citizen") {
+            toast("This account isn't a citizen account — please use Staff Sign In.", "error");
+            return;
+          }
+          authToken = data.access_token;
+          userRole = data.role;
+          userFullName = data.full_name;
+          localStorage.setItem("bv_token", authToken);
+          localStorage.setItem("bv_role", userRole);
+          localStorage.setItem("bv_fullname", userFullName);
+          setupApp();
+        } else {
+          toast("Invalid username or password.", "error");
+        }
+      });
+
+      document.getElementById("citizen-register-form").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const payload = {
+          full_name: document.getElementById("citizen-reg-fullname").value,
+          phone_number: document.getElementById("citizen-reg-phone").value,
+          username: document.getElementById("citizen-reg-username").value,
+          password: document.getElementById("citizen-reg-password").value
+        };
+        const res = await fetch("/api/auth/register-public", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+        if (res.ok) {
+          toast("Account created! Please sign in.", "success");
+          document.getElementById("citizen-login-username").value = payload.username;
+          document.getElementById("citizen-register-form").reset();
+          setCitizenSubTab("signin");
+        } else {
+          const err = await res.json().catch(() => ({}));
+          toast(err.detail || "Registration failed — try a different username.", "error");
+        }
+      });
+
+      document.getElementById("create-user-form").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const payload = {
+          full_name: document.getElementById("new-user-fullname").value,
+          username: document.getElementById("new-user-username").value,
+          password: document.getElementById("new-user-password").value,
+          role: document.getElementById("new-user-role").value
+        };
+        const res = await fetch("/api/users", { method: "POST", headers: headers(), body: JSON.stringify(payload) });
+        if (res.ok) {
+          toast("User created successfully!", "success");
+          document.getElementById("create-user-form").reset();
+          loadUsers();
+        } else {
+          toast("Failed to register user.", "error");
+        }
+      });
+
+      // Drag-and-drop polish for the upload zone (reuses the same file handling logic)
+      const dropArea = document.getElementById("file-drop-area");
+      if (dropArea) {
+        ["dragenter", "dragover"].forEach(evt =>
+          dropArea.addEventListener(evt, (e) => { e.preventDefault(); e.stopPropagation(); dropArea.classList.add("drag-over"); })
+        );
+        ["dragleave", "drop"].forEach(evt =>
+          dropArea.addEventListener(evt, (e) => { e.preventDefault(); e.stopPropagation(); dropArea.classList.remove("drag-over"); })
+        );
+        dropArea.addEventListener("drop", (e) => {
+          const files = Array.from(e.dataTransfer.files || []);
+          files.forEach(f => {
+            if (!selectedFiles.some(x => x.name === f.name && x.size === f.size)) {
+              selectedFiles.push(f);
+            }
+          });
+          renderSelectedFiles();
+        });
+      }
+
+      const citizenDropArea = document.getElementById("citizen-file-drop-area");
+      if (citizenDropArea) {
+        ["dragenter", "dragover"].forEach(evt =>
+          citizenDropArea.addEventListener(evt, (e) => { e.preventDefault(); e.stopPropagation(); citizenDropArea.classList.add("drag-over"); })
+        );
+        ["dragleave", "drop"].forEach(evt =>
+          citizenDropArea.addEventListener(evt, (e) => { e.preventDefault(); e.stopPropagation(); citizenDropArea.classList.remove("drag-over"); })
+        );
+        citizenDropArea.addEventListener("drop", (e) => {
+          const files = Array.from(e.dataTransfer.files || []);
+          files.forEach(f => {
+            if (!citizenSelectedFiles.some(x => x.name === f.name && x.size === f.size)) {
+              citizenSelectedFiles.push(f);
+            }
+          });
+          renderSelectedCitizenFiles();
+        });
+      }
+    });
+
+    function setAuthMode(mode) {
+      document.getElementById("mode-staff-btn").classList.toggle("active", mode === "staff");
+      document.getElementById("mode-citizen-btn").classList.toggle("active", mode === "citizen");
+      document.getElementById("staff-auth-block").classList.toggle("hidden", mode !== "staff");
+      document.getElementById("citizen-auth-block").classList.toggle("hidden", mode !== "citizen");
+    }
+
+    function setCitizenSubTab(tab) {
+      document.getElementById("citizen-signin-tab").classList.toggle("active", tab === "signin");
+      document.getElementById("citizen-register-tab").classList.toggle("active", tab === "register");
+      document.getElementById("citizen-login-form").classList.toggle("hidden", tab !== "signin");
+      document.getElementById("citizen-register-form").classList.toggle("hidden", tab !== "register");
+    }
+
+    function setupApp() {
+      document.getElementById("auth-panel").classList.add("hidden");
+      document.getElementById("app-shell").classList.remove("hidden");
+      document.getElementById("display-name").innerText = userFullName || userRole;
+      document.getElementById("display-role").innerText = userRole;
+      document.getElementById("display-avatar").innerText = (userFullName || userRole || "U").charAt(0).toUpperCase();
+
+      if (userRole === "Admin") {
+        document.getElementById("nav-users").classList.remove("hidden");
+        document.getElementById("nav-audit").classList.remove("hidden");
+        document.getElementById("admin-section-label").classList.remove("hidden");
+      }
+
+      if (userRole === "Admin" || userRole === "Revenue Officer") {
+        document.getElementById("nav-public-queue").classList.remove("hidden");
+        document.getElementById("verification-section-label").classList.remove("hidden");
+      }
+
+      tickClock();
+
+      if (userRole === "Citizen") {
+        document.getElementById("staff-workspace-menu").classList.add("hidden");
+        document.getElementById("citizen-workspace-menu").classList.remove("hidden");
+        document.querySelectorAll(".tab-panel").forEach(el => el.classList.add("hidden"));
+        document.getElementById("citizen-submit-view").classList.remove("hidden");
+        loadMySubmissions();
+      } else {
+        loadRecords();
+      }
+    }
+
+    function logout() {
+      localStorage.clear();
+      window.location.reload();
+    }
+
+    function showTab(tabId, evt) {
+      document.querySelectorAll(".tab-panel").forEach(el => el.classList.add("hidden"));
+      document.querySelectorAll(".sidebar-item").forEach(el => el.classList.remove("active"));
+      document.getElementById(tabId).classList.remove("hidden");
+      if (evt) evt.currentTarget.classList.add("active");
+
+      if (userRole === "Citizen") {
+        if (tabId === "citizen-my-submissions-view") loadMySubmissions();
+        return;
+      }
+      loadRecords();
+      if (tabId === "users-view") loadUsers();
+      if (tabId === "audit-view") loadAudit();
+      if (tabId === "public-queue-view") loadPublicQueue();
+    }
+
+    function handleFileSelect(e) {
+      const files = Array.from(e.target.files);
+      files.forEach(f => {
+        if (!selectedFiles.some(x => x.name === f.name && x.size === f.size)) {
+          selectedFiles.push(f);
+        }
+      });
+      renderSelectedFiles();
+    }
+
+    function removeFile(index) {
+      selectedFiles.splice(index, 1);
+      renderSelectedFiles();
+    }
+
+    function clearAllFiles() {
+      selectedFiles = [];
+      document.getElementById("file-input").value = "";
+      renderSelectedFiles();
+    }
+
+    function renderSelectedFiles() {
+      const list = document.getElementById("staged-file-list");
+      list.innerHTML = "";
+      selectedFiles.forEach((file, index) => {
+        const li = document.createElement("li");
+        li.className = "file-item";
+        li.innerHTML = `
+          <span>📄 <b>${file.name}</b> (${(file.size / 1024).toFixed(1)} KB)</span>
+          <button type="button" class="btn-remove-file" onclick="removeFile(${index})">✕</button>
+        `;
+        list.appendChild(li);
+      });
+      document.getElementById("upload-btn").disabled = selectedFiles.length === 0;
+    }
+
+    async function submitFiles() {
+      if (!selectedFiles.length) return;
+      const fd = new FormData();
+      selectedFiles.forEach(f => fd.append("files", f));
+
+      const btn = document.getElementById("upload-btn");
+      const originalLabel = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = `<span class="spinner"></span>Analyzing...`;
+      document.getElementById("upload-status").innerText = "Running OCR & validation - this can take a few seconds...";
+
+      const res = await fetch("/api/records/upload", { method: "POST", headers: { "Authorization": `Bearer ${authToken}` }, body: fd });
+
+      btn.disabled = false;
+      btn.innerHTML = originalLabel;
+
+      if (res.ok) {
+        toast("Files ingested successfully.", "success");
+        clearAllFiles();
+        document.getElementById("upload-status").innerText = "";
+        showTab("dashboard-view");
+      } else {
+        toast("Upload error - please check the file and try again.", "error");
+        document.getElementById("upload-status").innerText = "";
+      }
+    }
+
+    /* ---------------- Citizen Portal: Submit ---------------- */
+    function handleCitizenFileSelect(e) {
+      const files = Array.from(e.target.files);
+      files.forEach(f => {
+        if (!citizenSelectedFiles.some(x => x.name === f.name && x.size === f.size)) {
+          citizenSelectedFiles.push(f);
+        }
+      });
+      renderSelectedCitizenFiles();
+    }
+
+    function removeCitizenFile(index) {
+      citizenSelectedFiles.splice(index, 1);
+      renderSelectedCitizenFiles();
+    }
+
+    function clearAllCitizenFiles() {
+      citizenSelectedFiles = [];
+      document.getElementById("citizen-file-input").value = "";
+      renderSelectedCitizenFiles();
+    }
+
+    function renderSelectedCitizenFiles() {
+      const list = document.getElementById("citizen-staged-file-list");
+      list.innerHTML = "";
+      citizenSelectedFiles.forEach((file, index) => {
+        const li = document.createElement("li");
+        li.className = "file-item";
+        li.innerHTML = `
+          <span>📄 <b>${escapeHtml(file.name)}</b> (${(file.size / 1024).toFixed(1)} KB)</span>
+          <button type="button" class="btn-remove-file" onclick="removeCitizenFile(${index})">✕</button>
+        `;
+        list.appendChild(li);
+      });
+      document.getElementById("citizen-upload-btn").disabled = citizenSelectedFiles.length === 0;
+    }
+
+    async function submitCitizenFiles() {
+      if (!citizenSelectedFiles.length) return;
+      const fd = new FormData();
+      citizenSelectedFiles.forEach(f => fd.append("files", f));
+
+      const btn = document.getElementById("citizen-upload-btn");
+      const originalLabel = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = `<span class="spinner"></span>Submitting...`;
+      document.getElementById("citizen-upload-status").innerText = "Reading your document - this can take a few seconds...";
+
+      const res = await fetch("/api/public/submit", { method: "POST", headers: { "Authorization": `Bearer ${authToken}` }, body: fd });
+
+      btn.disabled = false;
+      btn.innerHTML = originalLabel;
+
+      if (res.ok) {
+        toast("Submitted! A Revenue Officer will physically verify it soon.", "success");
+        clearAllCitizenFiles();
+        document.getElementById("citizen-upload-status").innerText = "";
+        showTab("citizen-my-submissions-view");
+        document.getElementById("nav-citizen-mine").click();
+      } else {
+        toast("Submission error - please check the file and try again.", "error");
+        document.getElementById("citizen-upload-status").innerText = "";
+      }
+    }
+
+    function daysUntil(dateStr) {
+      if (!dateStr) return null;
+      const target = new Date(dateStr + "T00:00:00");
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      return Math.round((target - today) / 86400000);
+    }
+
+    function deadlineChipHtml(rec) {
+      if (rec.status === "Verified") return `<span class="deadline-chip">—</span>`;
+      if (!rec.verification_deadline) return `<span class="deadline-chip">No deadline</span>`;
+      if (rec.escalated) return `<span class="escalation-tag">Escalated</span>`;
+      const d = daysUntil(rec.verification_deadline);
+      if (d < 0) return `<span class="deadline-chip deadline-overdue">Overdue</span>`;
+      if (d <= 2) return `<span class="deadline-chip deadline-urgent">${d} day${d === 1 ? '' : 's'} left</span>`;
+      return `<span class="deadline-chip">${d} days left (${rec.verification_deadline})</span>`;
+    }
+
+    async function loadMySubmissions() {
+      const res = await fetch("/api/public/my-submissions", { headers: headers() });
+      const tbody = document.querySelector("#citizen-submissions-table tbody");
+      if (!res.ok) { tbody.innerHTML = "<tr><td colspan='6'><div class='empty-state'>Could not load your submissions.</div></td></tr>"; return; }
+      const rows = await res.json();
+      tbody.innerHTML = "";
+      if (!rows.length) {
+        tbody.innerHTML = "<tr><td colspan='6'><div class='empty-state'><span class='ic'>🗂️</span>You haven't submitted any land records yet.</div></td></tr>";
+        return;
+      }
+      rows.forEach(r => {
+        const tr = document.createElement("tr");
+        const statusClass = "status-" + r.status.toLowerCase().replace(/ /g, '-');
+        const conflictNote = r.has_conflict ? `<span class="conflict-tag">⚠ Competing Claim</span>` : "";
+        tr.innerHTML = `
+          <td>#${r.id}</td>
+          <td>${r.khasra_number || '-'} · ${r.village || '-'}</td>
+          <td><span class="badge-status ${statusClass}">${r.status}</span> ${conflictNote}</td>
+          <td>${deadlineChipHtml(r)}</td>
+          <td>${r.verified_by ? `✅ ${escapeHtml(r.verified_by)}<br><small style="color:#94a3b8;">${r.verified_at || ''}</small>` : '-'}</td>
+          <td style="max-width:260px; font-size:0.8rem; color:#64748b;">${(r.validation_flags || []).join('; ') || '-'}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+
+    /* ---------------- Officer: Public Submissions Queue ---------------- */
+    let publicQueueRecords = [];
+
+    async function loadPublicQueue() {
+      const res = await fetch("/api/officer/public-queue", { headers: headers() });
+      const tbody = document.querySelector("#public-queue-table tbody");
+      if (!res.ok) { tbody.innerHTML = "<tr><td colspan='7'><div class='empty-state'>Could not load the public queue.</div></td></tr>"; return; }
+      publicQueueRecords = await res.json();
+      tbody.innerHTML = "";
+      if (!publicQueueRecords.length) {
+        tbody.innerHTML = "<tr><td colspan='7'><div class='empty-state'><span class='ic'>🧾</span>No public submissions yet.</div></td></tr>";
+        return;
+      }
+      publicQueueRecords.forEach(r => {
+        const tr = document.createElement("tr");
+        const conflictNote = r.has_conflict ? `<span class="conflict-tag">⚠ Competing Claim</span>` : "";
+        const flagCount = (r.validation_flags || []).length;
+        tr.innerHTML = `
+          <td>#${r.id}</td>
+          <td>${r.khasra_number || '-'} · ${r.village || '-'}</td>
+          <td>${escapeHtml(r.submitter_name || r.uploaded_by || '-')}<br><small style="color:#94a3b8;">${escapeHtml(r.submitter_phone || '')}</small></td>
+          <td>${escapeHtml(r.owner_name || '-')}</td>
+          <td>${deadlineChipHtml(r)}</td>
+          <td>${flagCount ? `<span class="badge-flag">${flagCount} Flag(s)</span>` : '-'} ${conflictNote}</td>
+          <td>${r.status === "Verified" ? `<span class="badge-status status-verified">Verified</span>` : `<button class="btn btn-sm" onclick="openChecklistModal(${r.id})">Physically Verify</button>`}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+
+    function openChecklistModal(recordId) {
+      const rec = publicQueueRecords.find(r => r.id === recordId);
+      if (!rec) return;
+      currentChecklistRecordId = recordId;
+
+      const fieldMap = {
+        "Owner / Claimant Name": rec.owner_name,
+        "Seller Name": rec.seller_name,
+        "Buyer Name": rec.buyer_name,
+        "Khasra Number": rec.khasra_number,
+        "Khata Number": rec.khata_number,
+        "Plot Number": rec.plot_number,
+        "Village": rec.village,
+        "Tehsil": rec.tehsil,
+        "District": rec.district,
+        "Total Area": rec.total_area,
+        "Registration Date": rec.registration_date,
+        "Boundaries": rec.boundaries_desc,
+      };
+
+      const wrap = document.getElementById("checklist-fields");
+      wrap.innerHTML = "";
+      Object.entries(fieldMap).forEach(([label, value]) => {
+        if (value === null || value === undefined || value === "") return;
+        const fieldId = "chk-" + label.replace(/[^a-zA-Z0-9]/g, "");
+        const item = document.createElement("div");
+        item.className = "checklist-item";
+        item.innerHTML = `
+          <input type="checkbox" id="${fieldId}" data-field="${escapeHtml(label)}">
+          <label for="${fieldId}">${label} confirmed on-site
+            <span class="field-value">Claimed value: ${escapeHtml(String(value))}</span>
+          </label>
+        `;
+        wrap.appendChild(item);
+      });
+
+      const conflictWarning = rec.has_conflict
+        ? " ⚠ This land has a competing claim from another submission — verify carefully before approving."
+        : "";
+      document.getElementById("checklist-context").innerText =
+        `Record #${rec.id} · Submitted by ${rec.submitter_name || rec.uploaded_by || 'Unknown'}.${conflictWarning}`;
+      document.getElementById("checklist-notes").value = "";
+      document.getElementById("checklist-modal").classList.remove("hidden");
+    }
+
+    function closeChecklistModal() {
+      document.getElementById("checklist-modal").classList.add("hidden");
+      currentChecklistRecordId = null;
+    }
+
+    async function submitChecklist(forceFlag) {
+      if (!currentChecklistRecordId) return;
+      const checks = {};
+      document.querySelectorAll("#checklist-fields input[type='checkbox']").forEach(cb => {
+        checks[cb.dataset.field] = forceFlag ? false : cb.checked;
+      });
+      const notes = document.getElementById("checklist-notes").value;
+
+      const res = await fetch(`/api/officer/verify-checklist/${currentChecklistRecordId}`, {
+        method: "POST", headers: headers(), body: JSON.stringify({ checks, notes })
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        toast(
+          data.status === "Verified" ? `Record #${currentChecklistRecordId} verified by ${data.verified_by}.` : "Saved as Flagged — discrepancies recorded.",
+          data.status === "Verified" ? "success" : "warning"
+        );
+        closeChecklistModal();
+        loadPublicQueue();
+      } else {
+        toast("Could not save verification.", "error");
+      }
+    }
+
+    async function loadRecords() {
+      const res = await fetch("/api/records", { headers: headers() });
+      if (!res.ok) return;
+      allRecords = await res.json();
+
+      const flagged = allRecords.filter(r => r.status === "Flagged");
+      const pending = allRecords.filter(r => r.status === "Pending Verification");
+      const verified = allRecords.filter(r => r.status === "Verified");
+
+      animateCount("m-total", allRecords.length);
+      animateCount("m-flagged", flagged.length);
+      animateCount("m-pending", pending.length);
+      animateCount("m-verified", verified.length);
+      renderStatusChart(flagged.length, pending.length, verified.length);
+
+      renderDashboardTable("dash-flagged-table", flagged, true);
+      renderDashboardTable("dash-pending-table", pending, false);
+      renderDashboardTable("dash-verified-table", verified, false);
+      filterRegistry();
+      loadOwnershipChains();
+    }
+
+    async function loadOwnershipChains() {
+      const wrap = document.getElementById("ownership-chains");
+      if (!wrap) return;
+      try {
+        const res = await fetch("/api/timeline/chains", { headers: headers() });
+        if (!res.ok) {
+          wrap.innerHTML = `<div class="empty-chain-state">Could not load ownership timeline.</div>`;
+          return;
+        }
+        const chains = await res.json();
+        if (!chains.length) {
+          wrap.innerHTML = `<div class="empty-chain-state">🔗 No resold parcels yet — a chain appears here as soon as a land parcel (same Khasra + Village) is registered under 2 or more deeds.</div>`;
+          return;
+        }
+        wrap.innerHTML = "";
+        chains.forEach(c => {
+          const block = document.createElement("div");
+          block.className = "chain-block";
+          let hopsHtml = `<div class="hop-pill">${escapeHtml(c.hops[0].seller)}<span class="hp-date">${c.hops[0].date || 'n/a'}</span></div>`;
+          c.hops.forEach((h, i) => {
+            const isLast = i === c.hops.length - 1;
+            const cls = !h.continuity_ok ? "hop-pill hp-broken" : (isLast ? "hop-pill hp-current" : "hop-pill");
+            const title = !h.continuity_ok ? "Chain of title break detected" : (isLast ? "Current recorded owner" : "");
+            hopsHtml += `<span class="hop-arrow">→</span><div class="${cls}" title="${title}">${escapeHtml(h.buyer)}<span class="hp-date">${h.date || 'n/a'}</span></div>`;
+          });
+          block.innerHTML = `
+            <div class="chain-block-head">
+              <div><span class="land-id">Khasra #${escapeHtml(c.khasra_number)}</span> <span class="land-loc">· ${escapeHtml(c.village)}${c.district ? ', ' + escapeHtml(c.district) : ''}</span></div>
+              ${c.has_break ? `<span class="chain-break-tag">Title Break</span>` : `<span class="chain-transfers-tag">${c.total_transfers} transfers</span>`}
+            </div>
+            <div class="chain-row">${hopsHtml}</div>
+          `;
+          wrap.appendChild(block);
+        });
+      } catch (err) {
+        wrap.innerHTML = `<div class="empty-chain-state">Could not load ownership timeline.</div>`;
+      }
+    }
+
+    function escapeHtml(str) {
+      const div = document.createElement("div");
+      div.innerText = str == null ? "" : String(str);
+      return div.innerHTML;
+    }
+
+    function renderDashboardTable(tableId, records, isFlagged) {
+      const tbody = document.querySelector(`#${tableId} tbody`);
+      tbody.innerHTML = "";
+      if (!records.length) {
+        tbody.innerHTML = "<tr><td colspan='6'><div class='empty-state'><span class='ic'>🗂️</span>No records in this category.</div></td></tr>";
+        return;
+      }
+      records.forEach(r => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>#${r.id}</td><td>${r.village || '-'}</td><td>${r.khasra_number || '-'}</td>
+          <td>${r.owner_name || '-'}</td>
+          <td>${isFlagged ? `<span class="badge-flag">${r.validation_flags.length} Flag(s)</span>` : `<span class="badge-status status-${r.status.toLowerCase().replace(/ /g, '-')}">${r.status}</span>`}</td>
+          <td><button class="btn btn-sm" onclick="openReview(${r.id})">Double-Check</button></td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+
+    function setRegistryFilter(status, evt) {
+      registryStatusFilter = status;
+      document.querySelectorAll(".filter-chip").forEach(el => el.classList.remove("active"));
+      if (evt) evt.currentTarget.classList.add("active");
+      filterRegistry();
+    }
+
+    function filterRegistry() {
+      const query = (document.getElementById("registry-search")?.value || "").toLowerCase();
+      const tbody = document.querySelector("#records-table tbody");
+      tbody.innerHTML = "";
+      const filtered = allRecords.filter(r => {
+        const matchesQuery = (r.khasra_number + r.owner_name + r.village).toLowerCase().includes(query);
+        const matchesStatus = registryStatusFilter === "all" || r.status === registryStatusFilter;
+        return matchesQuery && matchesStatus;
+      });
+      if (!filtered.length) {
+        tbody.innerHTML = "<tr><td colspan='7'><div class='empty-state'><span class='ic'>🔍</span>No matching records found.</div></td></tr>";
+        return;
+      }
+      filtered.forEach(r => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>#${r.id}</td><td>${r.khasra_number || '-'}</td><td>${r.village || '-'}</td>
+          <td>${r.owner_name || '-'}</td><td>${r.total_area != null ? r.total_area : '-'}</td>
+          <td><span class="badge-status status-${r.status.toLowerCase().replace(/ /g, '-')}">${r.status}</span></td>
+          <td><button class="btn btn-sm" onclick="openReview(${r.id})">Verify</button></td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+
+    async function openReview(id) {
+      const rec = allRecords.find(r => r.id === id);
+      if (!rec) return;
+
+      document.getElementById("edit-id").value = rec.id;
+
+      // 1. Location
+      setupField("edit-district", "ci-district", rec.district, rec.confidence_scores?.district || 0.96);
+      setupField("edit-tehsil", "ci-tehsil", rec.tehsil, rec.confidence_scores?.tehsil || 0.94);
+      setupField("edit-village", "ci-village", rec.village, rec.confidence_scores?.village || 0.95);
+
+      // 2. Identifiers
+      setupField("edit-khasra", "ci-khasra", rec.khasra_number, rec.confidence_scores?.khasra_number || 0.94);
+      setupField("edit-khata", "ci-khata", rec.khata_number, rec.confidence_scores?.khata_number || 0.91);
+      setupField("edit-plot", "ci-plot", rec.plot_number, rec.confidence_scores?.plot_number || 0.90);
+      setupField("edit-property-id", "ci-property-id", rec.property_id, rec.confidence_scores?.property_id || 0.92);
+
+      // 3. Person / Holding
+      setupField("edit-owner", "ci-owner", rec.owner_name, rec.confidence_scores?.owner_name || 0.92);
+      setupField("edit-seller", "ci-seller", rec.seller_name, rec.confidence_scores?.seller_name || 0.90);
+      setupField("edit-share", "ci-share", rec.share_hissa, rec.confidence_scores?.share_hissa || 0.95);
+
+      // 4. Property Details
+      setupField("edit-area", "ci-area", rec.total_area, rec.confidence_scores?.total_area || 0.95);
+      setupField("edit-land-use", "ci-land-use", rec.land_use, rec.confidence_scores?.land_use || 0.93);
+      setupField("edit-consideration", "ci-consideration", rec.consideration_amount, rec.confidence_scores?.consideration_amount || 0.98);
+      setupField("edit-boundaries", "ci-boundaries", rec.boundaries_desc, rec.confidence_scores?.boundaries_desc || 0.88);
+
+      // 5. History & Registration
+      setupField("edit-reg-date", "ci-reg-date", rec.registration_date, rec.confidence_scores?.registration_date || 0.96);
+      setupField("edit-mut-date", "ci-mut-date", rec.mutation_date, rec.confidence_scores?.mutation_date || 0.85);
+      setupField("edit-serial", "ci-serial", rec.serial_number, rec.confidence_scores?.serial_number || 0.95);
+
+      // Authenticated Soft-Copy Viewer (Loads PDFs & Images as Blob URLs)
+      const previewArea = document.getElementById("doc-preview-area");
+      previewArea.innerHTML = `<span style="color:#94a3b8;">Loading document soft copy...</span>`;
+
+      if (currentBlobUrl) {
+        URL.revokeObjectURL(currentBlobUrl);
+        currentBlobUrl = null;
+      }
+
+      document.getElementById("review-modal").classList.remove("hidden");
+
+      try {
+        const res = await fetch(`/api/records/${rec.id}/file`, { headers: headers() });
+        if (res.ok) {
+          const blob = await res.blob();
+          currentBlobUrl = URL.createObjectURL(blob);
+          const ext = (rec.filename || "").split('.').pop().toLowerCase();
+          if (["png", "jpg", "jpeg", "bmp", "webp"].includes(ext)) {
+            previewArea.innerHTML = `<img src="${currentBlobUrl}" alt="Soft copy deed">`;
+          } else {
+            previewArea.innerHTML = `<iframe src="${currentBlobUrl}"></iframe>`;
+          }
+        } else {
+          previewArea.innerHTML = `<span style="color:#ef4444;">Could not load document preview.</span>`;
+        }
+      } catch (err) {
+        previewArea.innerHTML = `<span style="color:#ef4444;">Error previewing document.</span>`;
+      }
+    }
+
+    function setupField(inputId, labelId, val, conf = 0.95) {
+      const el = document.getElementById(inputId);
+      const lbl = document.getElementById(labelId);
+      el.value = val != null ? val : "";
+      if (conf < 0.90 || val == null || val === "") {
+        el.className = "field-uncertain";
+        if (lbl) {
+          lbl.className = "ci-low";
+          lbl.innerText = `[${Math.round(conf * 100)}% - Review Required]`;
+        }
+      } else {
+        el.className = "field-certain";
+        if (lbl) {
+          lbl.className = "ci-high";
+          lbl.innerText = `[${Math.round(conf * 100)}% - Auto-Accepted]`;
+        }
+      }
+    }
+
+    function closeModal() {
+      document.getElementById("review-modal").classList.add("hidden");
+      if (currentBlobUrl) {
+        URL.revokeObjectURL(currentBlobUrl);
+        currentBlobUrl = null;
+      }
+    }
+
+    async function saveRecord(targetStatus) {
+      const id = document.getElementById("edit-id").value;
+      const payload = {
+        district: document.getElementById("edit-district").value,
+        tehsil: document.getElementById("edit-tehsil").value,
+        village: document.getElementById("edit-village").value,
+        khasra_number: document.getElementById("edit-khasra").value,
+        khata_number: document.getElementById("edit-khata").value,
+        plot_number: document.getElementById("edit-plot").value,
+        property_id: document.getElementById("edit-property-id").value,
+        owner_name: document.getElementById("edit-owner").value,
+        seller_name: document.getElementById("edit-seller").value,
+        buyer_name: document.getElementById("edit-owner").value,
+        share_hissa: document.getElementById("edit-share").value,
+        total_area: parseFloat(document.getElementById("edit-area").value) || null,
+        land_use: document.getElementById("edit-land-use").value,
+        boundaries_desc: document.getElementById("edit-boundaries").value,
+        consideration_amount: parseFloat(document.getElementById("edit-consideration").value) || null,
+        registration_date: document.getElementById("edit-reg-date").value || null,
+        mutation_date: document.getElementById("edit-mut-date").value || null,
+        serial_number: document.getElementById("edit-serial").value || null,
+        document_type: "Sale Deed",
+        status: targetStatus
+      };
+
+      const res = await fetch(`/api/records/${id}`, { method: "PUT", headers: headers(), body: JSON.stringify(payload) });
+      if (res.ok) {
+        toast(`Record status updated to: ${targetStatus}`, targetStatus === "Verified" ? "success" : "warning");
+        closeModal();
+        loadRecords();
+      } else {
+        toast("Failed to update record.", "error");
+      }
+    }
+
+    async function loadUsers() {
+      const res = await fetch("/api/users", { headers: headers() });
+      if (!res.ok) return;
+      const users = await res.json();
+      const tbody = document.querySelector("#users-table tbody");
+      tbody.innerHTML = "";
+      if (!users.length) {
+        tbody.innerHTML = "<tr><td colspan='4'><div class='empty-state'><span class='ic'>👥</span>No users yet.</div></td></tr>";
+        return;
+      }
+      users.forEach(u => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td><b>${u.username}</b></td><td>${u.full_name}</td><td><span class="badge-type">${u.role}</span></td>
+          <td><button class="btn-danger-sm" onclick="deleteUser(${u.id})">Delete</button></td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+
+    async function deleteUser(id) {
+      if (!confirm("Delete user?")) return;
+      await fetch(`/api/users/${id}`, { method: "DELETE", headers: headers() });
+      toast("User deleted.", "warning");
+      loadUsers();
+    }
+
+    async function loadAudit() {
+      const res = await fetch("/api/audit-logs", { headers: headers() });
+      if (!res.ok) return;
+      const logs = await res.json();
+      const tbody = document.querySelector("#audit-table tbody");
+      tbody.innerHTML = "";
+      if (!logs.length) {
+        tbody.innerHTML = "<tr><td colspan='5'><div class='empty-state'><span class='ic'>🛡️</span>No audit activity recorded yet.</div></td></tr>";
+        return;
+      }
+      logs.forEach(l => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `<td>${l.timestamp}</td><td>${l.user_id}</td><td>${l.role}</td><td>${l.action}</td><td>${l.details}</td>`;
+        tbody.appendChild(tr);
+      });
+    }
+  </script>
+</body>
+</html>
