@@ -145,6 +145,25 @@ def init_db():
     """)
     conn.commit()
 
+    # --- Safe migrations: add public-submission columns to pre-existing DBs ---
+    def _safe_add_column(table, coldef):
+        try:
+            cursor.execute(f"ALTER TABLE {table} ADD COLUMN {coldef}")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass  # column already exists
+
+    _safe_add_column("users", "phone_number TEXT")
+    _safe_add_column("records", "submission_source TEXT DEFAULT 'Officer'")
+    _safe_add_column("records", "submitted_by_user_id INTEGER")
+    _safe_add_column("records", "verification_deadline TEXT")
+    _safe_add_column("records", "escalated INTEGER DEFAULT 0")
+    _safe_add_column("records", "has_conflict INTEGER DEFAULT 0")
+    _safe_add_column("records", "verified_by TEXT")
+    _safe_add_column("records", "verified_at TEXT")
+    _safe_add_column("records", "verification_checklist TEXT")
+    _safe_add_column("records", "verification_notes TEXT")
+
     cursor.execute("SELECT COUNT(*) FROM users")
     if cursor.fetchone()[0] == 0:
         cursor.execute(
@@ -155,6 +174,11 @@ def init_db():
     conn.close()
 
 init_db()
+
+PUBLIC_VERIFICATION_SLA_DAYS = 10
+PUBLIC_AWAITING_STATUS = "Awaiting Physical Verification"
+
+
 
 def log_action(conn: sqlite3.Connection, username: str, role: str, action: str, details: str = ""):
     conn.execute(
@@ -511,7 +535,171 @@ def run_validation_rules(data: dict, conn: sqlite3.Connection, current_record_id
         if dup:
             flags.append(f"Duplicate Serial Warning: Serial '{serial}' already registered under record #{dup[0]['id']}")
 
+    # Rule 5: Ownership Chain Continuity (Chain-of-Title fraud/error detection)
+    khasra = data.get("khasra_number")
+    village = data.get("village")
+    district = data.get("district")
+    seller = (data.get("seller_name") or "").strip().lower()
+    reg_date = data.get("registration_date")
+    if khasra and village and district and seller:
+        query = """
+            SELECT id, buyer_name, registration_date FROM records
+            WHERE LOWER(TRIM(khasra_number)) = LOWER(TRIM(?))
+              AND LOWER(TRIM(village)) = LOWER(TRIM(?))
+              AND LOWER(TRIM(district)) = LOWER(TRIM(?))
+        """
+        params = [khasra, village, district]
+        if current_record_id:
+            query += " AND id != ?"
+            params.append(current_record_id)
+        prior_records = conn.execute(query, params).fetchall()
+
+        # Narrow down to the transaction immediately preceding this one chronologically
+        candidates = []
+        for pr in prior_records:
+            pr_date = pr["registration_date"]
+            if reg_date and pr_date:
+                try:
+                    if datetime.strptime(pr_date, "%Y-%m-%d") < datetime.strptime(reg_date, "%Y-%m-%d"):
+                        candidates.append(pr)
+                except ValueError:
+                    candidates.append(pr)
+            elif not reg_date:
+                candidates.append(pr)
+
+        if candidates:
+            candidates.sort(key=lambda p: p["registration_date"] or "", reverse=True)
+            latest_prior = candidates[0]
+            prior_buyer = (latest_prior["buyer_name"] or "").strip().lower()
+            if prior_buyer and prior_buyer != seller:
+                flags.append(
+                    f"Chain of Title Break: Seller '{data.get('seller_name')}' does not match the "
+                    f"previously recorded owner '{latest_prior['buyer_name']}' (Record #{latest_prior['id']})"
+                )
+
     return flags
+
+# ----------------- Core API Endpoints -----------------
+
+def find_conflicting_records(conn: sqlite3.Connection, khasra, village, district, exclude_id: Optional[int] = None):
+    """Find other still-active (non-Verified) records claiming the exact same land parcel."""
+    if not (khasra and village and district):
+        return []
+    query = """
+        SELECT id, submitted_by_user_id, submission_source, status FROM records
+        WHERE LOWER(TRIM(khasra_number)) = LOWER(TRIM(?))
+          AND LOWER(TRIM(village)) = LOWER(TRIM(?))
+          AND LOWER(TRIM(district)) = LOWER(TRIM(?))
+          AND status != 'Verified'
+    """
+    params = [khasra, village, district]
+    if exclude_id:
+        query += " AND id != ?"
+        params.append(exclude_id)
+    return conn.execute(query, params).fetchall()
+
+def _flag_existing_conflict(conn: sqlite3.Connection, record_id: int, message: str):
+    row = conn.execute("SELECT validation_flags FROM records WHERE id = ?", (record_id,)).fetchone()
+    if not row:
+        return
+    existing = json.loads(row["validation_flags"]) if row["validation_flags"] else []
+    if message not in existing:
+        existing.append(message)
+    conn.execute("UPDATE records SET has_conflict = 1, validation_flags = ? WHERE id = ?", (json.dumps(existing), record_id))
+
+def _ingest_record(
+    conn: sqlite3.Connection,
+    file_bytes: bytes,
+    filename: str,
+    uploader_username: str,
+    submission_source: str = "Officer",
+    submitted_by_user_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Shared pipeline: save file -> OCR -> extract -> validate -> conflict-check -> insert."""
+    file_location = os.path.join(UPLOAD_DIR, filename)
+    with open(file_location, "wb") as f:
+        f.write(file_bytes)
+
+    raw_text, ocr_quality = run_ocr(file_bytes, filename)
+    extracted, field_confidence = extract_land_identity(raw_text)
+    flags = run_validation_rules(extracted, conn)
+
+    verification_deadline = None
+    has_conflict = 0
+
+    if submission_source == "Public":
+        # Public self-submissions are NEVER auto-verified — they always need a physical, on-site
+        # check by a Revenue Officer before they can enter the official registry.
+        final_status = PUBLIC_AWAITING_STATUS
+        verification_deadline = (datetime.utcnow() + timedelta(days=PUBLIC_VERIFICATION_SLA_DAYS)).strftime("%Y-%m-%d")
+
+        conflicts = find_conflicting_records(conn, extracted.get("khasra_number"), extracted.get("village"), extracted.get("district"))
+        if conflicts:
+            has_conflict = 1
+            conflict_ids = ", ".join(f"#{c['id']}" for c in conflicts)
+            flags.append(
+                f"Competing Claim Detected: This land is also claimed in record(s) {conflict_ids} — "
+                f"both submissions must be physically verified before either can be approved."
+            )
+            for c in conflicts:
+                _flag_existing_conflict(
+                    conn, c["id"],
+                    "Competing Claim Detected: A newer submission also claims this same land — "
+                    "both must be physically re-verified before either proceeds."
+                )
+    else:
+        # Officer/Clerk ingested documents: clean docs auto-verify, anything flagged needs review
+        final_status = "Verified" if len(flags) == 0 else "Flagged"
+
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO records (
+            filename, file_path, status, raw_text, owner_name, seller_name, buyer_name,
+            share_hissa, document_type, serial_number, survey_number, khasra_number, khata_number,
+            plot_number, property_id, total_area, sub_plot_areas, land_use, boundaries_desc,
+            village, tehsil, district, consideration_amount, registration_date, mutation_date,
+            confidence_scores, validation_flags, uploaded_by, ocr_quality,
+            submission_source, submitted_by_user_id, verification_deadline, has_conflict
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        filename,
+        file_location,
+        final_status,
+        raw_text,
+        extracted["owner_name"],
+        extracted["seller_name"],
+        extracted["buyer_name"],
+        extracted["share_hissa"],
+        extracted["document_type"],
+        extracted["serial_number"],
+        extracted["survey_number"],
+        extracted["khasra_number"],
+        extracted["khata_number"],
+        extracted["plot_number"],
+        extracted["property_id"],
+        extracted["total_area"],
+        json.dumps(extracted["sub_plot_areas"]),
+        extracted["land_use"],
+        extracted["boundaries_desc"],
+        extracted["village"],
+        extracted["tehsil"],
+        extracted["district"],
+        extracted["consideration_amount"],
+        extracted["registration_date"],
+        extracted["mutation_date"],
+        json.dumps(field_confidence),
+        json.dumps(flags),
+        uploader_username,
+        ocr_quality,
+        submission_source,
+        submitted_by_user_id,
+        verification_deadline,
+        has_conflict,
+    ))
+    record_id = cursor.lastrowid
+    conn.commit()
+
+    return {"id": record_id, "filename": filename, "status": final_status, "flags": flags, "has_conflict": bool(has_conflict)}
 
 # ----------------- Core API Endpoints -----------------
 
@@ -531,79 +719,177 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), conn: sqlite3.Connec
         "full_name": user["full_name"]
     }
 
+class PublicRegisterPayload(BaseModel):
+    full_name: str
+    username: str
+    password: str
+    phone_number: Optional[str] = None
+
+@app.post("/api/auth/register-public")
+def register_public(payload: PublicRegisterPayload, conn: sqlite3.Connection = Depends(get_db)):
+    """Public self-service signup — no Admin has to manually create an account for every citizen."""
+    username = payload.username.strip()
+    if not username or not payload.password or not payload.full_name.strip():
+        raise HTTPException(status_code=400, detail="Full name, username and password are required")
+    existing = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
+    if existing:
+        raise HTTPException(status_code=400, detail="That username is already taken")
+    conn.execute(
+        "INSERT INTO users (username, full_name, hashed_password, role, phone_number) VALUES (?, ?, ?, ?, ?)",
+        (username, payload.full_name.strip(), hash_password(payload.password), "Citizen", (payload.phone_number or "").strip())
+    )
+    conn.commit()
+    log_action(conn, username, "Citizen", "PUBLIC_REGISTER", f"Public citizen self-registered: {payload.full_name.strip()}")
+    return {"message": "Account created. You can now sign in and submit your land record for verification."}
+
 @app.post("/api/records/upload")
 async def upload_documents(
     files: List[UploadFile] = File(...),
     current_user: dict = Depends(get_current_user),
     conn: sqlite3.Connection = Depends(get_db)
 ):
+    if current_user["role"] == "Citizen":
+        raise HTTPException(status_code=403, detail="Citizens must submit land records through the Public Submission portal.")
+
     processed = []
     for file in files:
         contents = await file.read()
         if not contents:
             continue
-
-        file_location = os.path.join(UPLOAD_DIR, file.filename)
-        with open(file_location, "wb") as f:
-            f.write(contents)
-
-        raw_text, ocr_quality = run_ocr(contents, file.filename)
-        extracted, field_confidence = extract_land_identity(raw_text)
-        flags = run_validation_rules(extracted, conn)
-
-        # Automatic Classification: Genuine documents with 0 flags are auto-verified
-        auto_status = "Verified" if len(flags) == 0 else "Flagged"
-
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO records (
-                filename, file_path, status, raw_text, owner_name, seller_name, buyer_name,
-                share_hissa, document_type, serial_number, survey_number, khasra_number, khata_number,
-                plot_number, property_id, total_area, sub_plot_areas, land_use, boundaries_desc,
-                village, tehsil, district, consideration_amount, registration_date, mutation_date,
-                confidence_scores, validation_flags, uploaded_by, ocr_quality
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            file.filename,
-            file_location,
-            auto_status,
-            raw_text,
-            extracted["owner_name"],
-            extracted["seller_name"],
-            extracted["buyer_name"],
-            extracted["share_hissa"],
-            extracted["document_type"],
-            extracted["serial_number"],
-            extracted["survey_number"],
-            extracted["khasra_number"],
-            extracted["khata_number"],
-            extracted["plot_number"],
-            extracted["property_id"],
-            extracted["total_area"],
-            json.dumps(extracted["sub_plot_areas"]),
-            extracted["land_use"],
-            extracted["boundaries_desc"],
-            extracted["village"],
-            extracted["tehsil"],
-            extracted["district"],
-            extracted["consideration_amount"],
-            extracted["registration_date"],
-            extracted["mutation_date"],
-            json.dumps(field_confidence),
-            json.dumps(flags),
-            current_user["username"],
-            ocr_quality,
-        ))
-        record_id = cursor.lastrowid
-        conn.commit()
-
-        log_action(conn, current_user["username"], current_user["role"], "UPLOAD", f"Ingested record #{record_id} ({file.filename}) - Result: {auto_status}")
-        processed.append({"id": record_id, "filename": file.filename, "status": auto_status, "flags": flags})
+        result = _ingest_record(conn, contents, file.filename, current_user["username"], submission_source="Officer")
+        log_action(conn, current_user["username"], current_user["role"], "UPLOAD",
+                   f"Ingested record #{result['id']} ({file.filename}) - Result: {result['status']}")
+        processed.append(result)
 
     return {"message": f"Processed {len(processed)} document(s)", "records": processed}
 
+@app.post("/api/public/submit")
+async def submit_public_record(
+    files: List[UploadFile] = File(...),
+    current_user: dict = Depends(get_current_user),
+    conn: sqlite3.Connection = Depends(get_db)
+):
+    if current_user["role"] != "Citizen":
+        raise HTTPException(status_code=403, detail="Only citizen accounts can use the public submission portal.")
+
+    processed = []
+    for file in files:
+        contents = await file.read()
+        if not contents:
+            continue
+        result = _ingest_record(
+            conn, contents, file.filename, current_user["username"],
+            submission_source="Public", submitted_by_user_id=current_user["id"]
+        )
+        log_action(conn, current_user["username"], current_user["role"], "PUBLIC_SUBMIT",
+                   f"Citizen submitted record #{result['id']} ({file.filename}) for physical verification")
+        processed.append(result)
+
+    return {"message": f"Submitted {len(processed)} document(s) for physical verification.", "records": processed}
+
+@app.get("/api/public/my-submissions")
+def my_public_submissions(current_user: dict = Depends(get_current_user), conn: sqlite3.Connection = Depends(get_db)):
+    if current_user["role"] != "Citizen":
+        raise HTTPException(status_code=403, detail="Citizen accounts only.")
+    rows = conn.execute("SELECT * FROM records WHERE submitted_by_user_id = ? ORDER BY id DESC", (current_user["id"],)).fetchall()
+    result = []
+    for r in rows:
+        rec = dict(r)
+        rec["validation_flags"] = json.loads(rec["validation_flags"]) if rec["validation_flags"] else []
+        rec["confidence_scores"] = json.loads(rec["confidence_scores"]) if rec["confidence_scores"] else {}
+        rec["verification_checklist"] = json.loads(rec["verification_checklist"]) if rec.get("verification_checklist") else {}
+        result.append(rec)
+    return result
+
+@app.get("/api/officer/public-queue")
+def public_queue(current_user: dict = Depends(get_current_user), conn: sqlite3.Connection = Depends(get_db)):
+    if current_user["role"] not in ["Admin", "Revenue Officer"]:
+        raise HTTPException(status_code=403, detail="Access denied.")
+
+    # Auto-escalate anything that missed its physical-verification SLA
+    today_str = datetime.utcnow().strftime("%Y-%m-%d")
+    overdue = conn.execute("""
+        SELECT id FROM records
+        WHERE submission_source = 'Public' AND status = ?
+          AND escalated = 0 AND verification_deadline IS NOT NULL AND verification_deadline < ?
+    """, (PUBLIC_AWAITING_STATUS, today_str)).fetchall()
+    for row in overdue:
+        conn.execute("UPDATE records SET escalated = 1 WHERE id = ?", (row["id"],))
+        log_action(conn, "SYSTEM", "System", "ESCALATION",
+                   f"Record #{row['id']} missed its physical-verification deadline and was escalated to senior authority review.")
+    if overdue:
+        conn.commit()
+
+    rows = conn.execute("""
+        SELECT r.*, u.full_name AS submitter_name, u.phone_number AS submitter_phone
+        FROM records r LEFT JOIN users u ON r.submitted_by_user_id = u.id
+        WHERE r.submission_source = 'Public'
+        ORDER BY r.escalated DESC, r.verification_deadline ASC, r.id DESC
+    """).fetchall()
+
+    result = []
+    for r in rows:
+        rec = dict(r)
+        rec["validation_flags"] = json.loads(rec["validation_flags"]) if rec["validation_flags"] else []
+        rec["confidence_scores"] = json.loads(rec["confidence_scores"]) if rec["confidence_scores"] else {}
+        rec["verification_checklist"] = json.loads(rec["verification_checklist"]) if rec.get("verification_checklist") else {}
+        result.append(rec)
+    return result
+
+class VerificationChecklistPayload(BaseModel):
+    checks: Dict[str, bool]
+    notes: Optional[str] = None
+
+@app.post("/api/officer/verify-checklist/{record_id}")
+def verify_checklist(
+    record_id: int,
+    payload: VerificationChecklistPayload,
+    current_user: dict = Depends(get_current_user),
+    conn: sqlite3.Connection = Depends(get_db)
+):
+    if current_user["role"] not in ["Admin", "Revenue Officer"]:
+        raise HTTPException(status_code=403, detail="Access denied.")
+    record = conn.execute("SELECT * FROM records WHERE id = ?", (record_id,)).fetchone()
+    if not record:
+        raise HTTPException(status_code=404, detail="Record not found")
+
+    checks = payload.checks or {}
+    all_confirmed = len(checks) > 0 and all(checks.values())
+
+    existing_flags = json.loads(record["validation_flags"]) if record["validation_flags"] else []
+    kept_flags = [f for f in existing_flags if not f.startswith("Competing Claim") and not f.startswith("Physical Verification")]
+
+    if all_confirmed:
+        new_status = "Verified"
+        verified_by = current_user["full_name"]
+        verified_at = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+        kept_flags = []
+    else:
+        new_status = "Flagged"
+        verified_by = None
+        verified_at = None
+        unchecked = [k for k, v in checks.items() if not v]
+        kept_flags.append(
+            f"Physical Verification Incomplete: field(s) not confirmed on-site — {', '.join(unchecked) if unchecked else 'none confirmed'}"
+        )
+
+    conn.execute("""
+        UPDATE records SET
+            status = ?, verified_by = ?, verified_at = ?, verification_checklist = ?,
+            verification_notes = ?, validation_flags = ?, escalated = 0
+        WHERE id = ?
+    """, (new_status, verified_by, verified_at, json.dumps(checks), payload.notes or "", json.dumps(kept_flags), record_id))
+    conn.commit()
+
+    log_action(conn, current_user["username"], current_user["role"], "PHYSICAL_VERIFICATION",
+               f"Record #{record_id} physically verified by {current_user['full_name']} — Result: {new_status}")
+
+    return {"message": "Verification recorded", "status": new_status, "verified_by": verified_by}
+
 @app.get("/api/records")
 def list_records(current_user: dict = Depends(get_current_user), conn: sqlite3.Connection = Depends(get_db)):
+    if current_user["role"] == "Citizen":
+        raise HTTPException(status_code=403, detail="Citizens cannot access the internal registry. Use /api/public/my-submissions.")
     records = conn.execute("SELECT * FROM records ORDER BY id DESC").fetchall()
     role = current_user["role"]
 
@@ -625,15 +911,92 @@ def list_records(current_user: dict = Depends(get_current_user), conn: sqlite3.C
         sanitized.append(rec)
     return sanitized
 
+@app.get("/api/timeline/chains")
+def get_ownership_chains(current_user: dict = Depends(get_current_user), conn: sqlite3.Connection = Depends(get_db)):
+    rows = conn.execute("""
+        SELECT id, khasra_number, village, district, seller_name, buyer_name, registration_date, status
+        FROM records
+        WHERE khasra_number IS NOT NULL AND TRIM(khasra_number) != ''
+          AND village IS NOT NULL AND TRIM(village) != ''
+        ORDER BY id
+    """).fetchall()
+
+    groups: Dict[tuple, List[dict]] = {}
+    for r in rows:
+        rec = dict(r)
+        key = (
+            (rec["khasra_number"] or "").strip().lower(),
+            (rec["village"] or "").strip().lower(),
+            (rec["district"] or "").strip().lower(),
+        )
+        groups.setdefault(key, []).append(rec)
+
+    def sort_key(rec):
+        d = rec.get("registration_date")
+        if d:
+            try:
+                return (0, datetime.strptime(d, "%Y-%m-%d"))
+            except ValueError:
+                pass
+        return (1, datetime.min)
+
+    chains = []
+    for key, recs in groups.items():
+        if len(recs) < 2:
+            continue  # only show land parcels with an actual resale history
+        recs_sorted = sorted(recs, key=sort_key)
+
+        hops = []
+        has_break = False
+        for i, rec in enumerate(recs_sorted):
+            continuity_ok = True
+            if i > 0:
+                prev_buyer = (recs_sorted[i - 1].get("buyer_name") or "").strip().lower()
+                cur_seller = (rec.get("seller_name") or "").strip().lower()
+                if prev_buyer and cur_seller and prev_buyer != cur_seller:
+                    continuity_ok = False
+                    has_break = True
+            hops.append({
+                "record_id": rec["id"],
+                "seller": rec.get("seller_name") or "Unknown",
+                "buyer": rec.get("buyer_name") or "Unknown",
+                "date": rec.get("registration_date"),
+                "status": rec.get("status"),
+                "continuity_ok": continuity_ok,
+            })
+
+        chains.append({
+            "khasra_number": recs_sorted[0]["khasra_number"],
+            "village": recs_sorted[0]["village"],
+            "district": recs_sorted[0]["district"],
+            "hops": hops,
+            "total_transfers": len(hops),
+            "has_break": has_break,
+            "last_updated_id": max(r["id"] for r in recs_sorted),
+        })
+
+    chains.sort(key=lambda c: c["last_updated_id"], reverse=True)
+    chains = chains[:8]
+
+    if current_user["role"] == "Clerk":
+        for c in chains:
+            for h in c["hops"]:
+                h["seller"] = "[RESTRICTED]"
+                h["buyer"] = "[RESTRICTED]"
+
+    return chains
+
 @app.get("/api/records/{record_id}/file")
 def get_record_file(
     record_id: int,
     current_user: dict = Depends(get_current_user),
     conn: sqlite3.Connection = Depends(get_db)
 ):
-    record = conn.execute("SELECT file_path, filename FROM records WHERE id = ?", (record_id,)).fetchone()
+    record = conn.execute("SELECT file_path, filename, submitted_by_user_id FROM records WHERE id = ?", (record_id,)).fetchone()
     if not record:
         raise HTTPException(status_code=404, detail="Record not found")
+    if current_user["role"] == "Citizen" and record["submitted_by_user_id"] != current_user["id"]:
+        raise HTTPException(status_code=403, detail="You can only view files from your own submissions.")
     if not os.path.exists(record["file_path"]):
         raise HTTPException(status_code=404, detail="File missing from storage")
     return FileResponse(record["file_path"], filename=record["filename"])
