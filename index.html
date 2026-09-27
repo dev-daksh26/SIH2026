@@ -136,6 +136,13 @@
     }
     .auth-footnote { text-align: center; margin-top: 1.4rem; font-size: 0.76rem; color: #94a3b8; }
 
+    .auth-mode-toggle { display: flex; gap: 0.4rem; background: #f1f4fa; padding: 0.3rem; border-radius: 12px; margin-bottom: 1.6rem; }
+    .auth-mode-btn { flex: 1; border: none; background: transparent; padding: 0.6rem 0.4rem; border-radius: 9px; font-size: 0.76rem; font-weight: 700; color: #64748b; cursor: pointer; transition: all 0.2s ease; font-family: inherit; }
+    .auth-mode-btn.active { background: white; color: var(--primary); box-shadow: var(--shadow-sm); }
+    .citizen-subtabs { display: flex; gap: 1.3rem; margin-bottom: 1.2rem; border-bottom: 1px solid var(--border); }
+    .citizen-subtab { font-size: 0.8rem; font-weight: 700; color: #94a3b8; padding-bottom: 0.6rem; cursor: pointer; border-bottom: 2px solid transparent; transition: color 0.2s ease; }
+    .citizen-subtab.active { color: var(--primary); border-bottom-color: var(--primary); }
+
     @media (max-width: 900px) {
       .auth-container { grid-template-columns: 1fr; }
       .auth-visual { display: none; }
@@ -299,6 +306,28 @@
     .legend-item .sw { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
     .legend-item b { color: var(--text); margin-left: auto; font-weight: 700; }
 
+    /* ---------------- Land Ownership Timeline ---------------- */
+    .timeline-card-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 1.1rem; flex-wrap: wrap; gap: 0.3rem; }
+    .timeline-card-head h3 { margin: 0; font-size: 1.05rem; font-weight: 800; }
+    .timeline-card-head .desc { font-size: 0.78rem; color: #94a3b8; }
+    .chain-list { display: flex; flex-direction: column; gap: 0.9rem; max-height: 320px; overflow-y: auto; padding-right: 4px; }
+    .chain-block { border: 1px solid var(--border); border-radius: 12px; padding: 0.9rem 1rem; background: #fbfcfe; animation: fadeInUp 0.35s ease; }
+    .chain-block-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; flex-wrap: wrap; gap: 0.4rem; }
+    .chain-block-head .land-id { font-weight: 800; font-size: 0.84rem; color: var(--text); }
+    .chain-block-head .land-loc { font-size: 0.72rem; color: #94a3b8; }
+    .chain-transfers-tag { font-size: 0.7rem; color: #94a3b8; font-weight: 600; }
+    .chain-break-tag { background: #fee2e2; color: var(--danger); font-size: 0.68rem; font-weight: 800; padding: 0.22rem 0.6rem; border-radius: 20px; display: inline-flex; align-items: center; gap: 0.3rem; }
+    .chain-break-tag::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: pulseDot 1.6s infinite; }
+    .chain-row { display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap; }
+    .hop-pill { display: flex; flex-direction: column; align-items: center; padding: 0.4rem 0.7rem; border-radius: 10px; background: var(--primary-light); color: var(--primary); font-size: 0.76rem; font-weight: 700; min-width: 88px; text-align: center; line-height: 1.3; }
+    .hop-pill .hp-date { font-size: 0.6rem; font-weight: 600; color: #64748b; margin-top: 0.15rem; }
+    .hop-pill.hp-broken { background: #fee2e2; color: var(--danger); }
+    .hop-pill.hp-broken .hp-date { color: #b91c1c; }
+    .hop-pill.hp-current { background: linear-gradient(135deg, var(--primary), var(--accent2)); color: white; box-shadow: var(--shadow-glow); }
+    .hop-pill.hp-current .hp-date { color: rgba(255,255,255,0.8); }
+    .hop-arrow { color: #cbd5e1; font-weight: 700; font-size: 1rem; flex-shrink: 0; }
+    .empty-chain-state { font-size: 0.83rem; color: #94a3b8; text-align: center; padding: 1.6rem 0.5rem; line-height: 1.5; }
+
     .tips-card ul { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 0.85rem; }
     .tips-card li { display: flex; gap: 0.7rem; align-items: flex-start; font-size: 0.85rem; color: #475569; line-height: 1.45; }
     .tips-card li .bullet {
@@ -360,6 +389,27 @@
     .status-pending { background: #dbeafe; color: #2563eb; }
     .status-flagged { background: #fee2e2; color: #dc2626; }
     .status-flagged::before { animation: pulseDot 1.6s infinite; }
+    .status-awaiting-physical-verification { background: #ede9fe; color: #7c3aed; }
+    .status-awaiting-physical-verification::before { animation: pulseDot 1.6s infinite; }
+
+    .escalation-tag, .conflict-tag { font-size: 0.68rem; font-weight: 800; padding: 0.22rem 0.6rem; border-radius: 20px; display: inline-flex; align-items: center; gap: 0.3rem; white-space: nowrap; }
+    .escalation-tag { background: #fee2e2; color: var(--danger); }
+    .escalation-tag::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: pulseDot 1.6s infinite; }
+    .conflict-tag { background: #fef3c7; color: var(--warning); }
+
+    .deadline-chip { font-size: 0.72rem; font-weight: 700; color: #475569; background: #f1f5f9; padding: 0.22rem 0.6rem; border-radius: 20px; display: inline-block; white-space: nowrap; }
+    .deadline-chip.deadline-urgent { background: #fef3c7; color: #b45309; }
+    .deadline-chip.deadline-overdue { background: #fee2e2; color: var(--danger); }
+
+    .modal-box.modal-box-sm { width: 620px; }
+    .checklist-item { display: flex; align-items: flex-start; gap: 0.7rem; padding: 0.65rem 0; border-bottom: 1px solid var(--border); font-size: 0.86rem; }
+    .checklist-item:last-child { border-bottom: none; }
+    .checklist-item input[type="checkbox"] { width: 18px; height: 18px; margin-top: 2px; accent-color: var(--primary); flex-shrink: 0; cursor: pointer; }
+    .checklist-item label { flex: 1; cursor: pointer; }
+    .checklist-item .field-value { color: #64748b; font-size: 0.78rem; display: block; margin-top: 0.15rem; }
+    .verified-stamp { display: flex; align-items: center; gap: 0.6rem; background: #f0fdf9; border: 1px solid #bbf7d0; border-radius: 12px; padding: 0.8rem 1rem; font-size: 0.83rem; color: #166534; margin-top: 0.9rem; }
+    .verified-stamp b { color: var(--success); }
+    .submitter-note { display: flex; align-items: center; gap: 0.5rem; font-size: 0.78rem; color: #94a3b8; margin-bottom: 1rem; }
     .status-ready { background: #f1f5f9; color: #475569; }
     .badge-flag { background: #fef3c7; color: var(--warning); padding: 0.22rem 0.55rem; border-radius: 6px; font-weight: 700; font-size: 0.74rem; }
     .badge-type { background: #ede9fe; color: #6d28d9; padding: 0.18rem 0.55rem; border-radius: 6px; font-size: 0.7rem; font-weight: 700; }
@@ -479,6 +529,7 @@
           <div class="auth-feature"><span class="ic">📄</span> Instant OCR extraction of Khasra, Khata & ownership fields</div>
           <div class="auth-feature"><span class="ic">🛡️</span> Automated duplicate & consistency validation rules</div>
           <div class="auth-feature"><span class="ic">✅</span> Side-by-side soft-copy verification workflow</div>
+          <div class="auth-feature"><span class="ic">🙋</span> Citizen self-service submission with physical verification</div>
           <div class="auth-feature"><span class="ic">🔐</span> Full role-based access with a complete audit trail</div>
         </div>
         <div class="auth-stats">
@@ -493,12 +544,42 @@
         <div class="auth-logo">🏛️</div>
         <h2>BharatVault</h2>
         <p class="sub">Intelligent Land Record & Verification System</p>
-        <form id="login-form">
-          <div class="form-group"><label>User ID</label><input type="text" id="login-username" required autocomplete="username"></div>
-          <div class="form-group"><label>Password</label><input type="password" id="login-password" required autocomplete="current-password"></div>
-          <button type="submit" class="btn" style="width:100%;">Sign In</button>
-        </form>
-        <p class="auth-footnote">Secured access · Clerk, Revenue Officer & Admin roles</p>
+
+        <div class="auth-mode-toggle">
+          <button type="button" class="auth-mode-btn active" id="mode-staff-btn" onclick="setAuthMode('staff')">🏛️ Staff Sign In</button>
+          <button type="button" class="auth-mode-btn" id="mode-citizen-btn" onclick="setAuthMode('citizen')">🙋 Citizen Portal</button>
+        </div>
+
+        <div id="staff-auth-block">
+          <form id="login-form">
+            <div class="form-group"><label>User ID</label><input type="text" id="login-username" required autocomplete="username"></div>
+            <div class="form-group"><label>Password</label><input type="password" id="login-password" required autocomplete="current-password"></div>
+            <button type="submit" class="btn" style="width:100%;">Sign In</button>
+          </form>
+          <p class="auth-footnote">Secured access · Clerk, Revenue Officer & Admin roles</p>
+        </div>
+
+        <div id="citizen-auth-block" class="hidden">
+          <div class="citizen-subtabs">
+            <span class="citizen-subtab active" id="citizen-signin-tab" onclick="setCitizenSubTab('signin')">Sign In</span>
+            <span class="citizen-subtab" id="citizen-register-tab" onclick="setCitizenSubTab('register')">New here? Register</span>
+          </div>
+
+          <form id="citizen-login-form" class="citizen-subpanel">
+            <div class="form-group"><label>Username</label><input type="text" id="citizen-login-username" required autocomplete="username"></div>
+            <div class="form-group"><label>Password</label><input type="password" id="citizen-login-password" required autocomplete="current-password"></div>
+            <button type="submit" class="btn" style="width:100%;">Sign In</button>
+          </form>
+
+          <form id="citizen-register-form" class="citizen-subpanel hidden">
+            <div class="form-group"><label>Full Name</label><input type="text" id="citizen-reg-fullname" required></div>
+            <div class="form-group"><label>Mobile Number</label><input type="tel" id="citizen-reg-phone" placeholder="10-digit mobile" required></div>
+            <div class="form-group"><label>Choose Username</label><input type="text" id="citizen-reg-username" required autocomplete="username"></div>
+            <div class="form-group"><label>Choose Password</label><input type="password" id="citizen-reg-password" required autocomplete="new-password"></div>
+            <button type="submit" class="btn" style="width:100%;">Create My Account</button>
+          </form>
+          <p class="auth-footnote">Self-registration for landowners — no office visit needed to get started. Every submission is physically checked by a Revenue Officer before it enters official records.</p>
+        </div>
       </div>
     </div>
   </div>
@@ -514,10 +595,18 @@
         </div>
       </div>
       <div class="sidebar-section-label">Workspace</div>
-      <ul class="sidebar-menu">
+      <ul class="sidebar-menu" id="staff-workspace-menu">
         <li class="sidebar-item active" onclick="showTab('dashboard-view', event)"><span class="ic">📊</span> Dashboard</li>
         <li class="sidebar-item" onclick="showTab('upload-view', event)"><span class="ic">📥</span> Upload Files</li>
         <li class="sidebar-item" onclick="showTab('records-view', event)"><span class="ic">📑</span> All Records</li>
+      </ul>
+      <ul class="sidebar-menu hidden" id="citizen-workspace-menu">
+        <li id="nav-citizen-submit" class="sidebar-item active" onclick="showTab('citizen-submit-view', event)"><span class="ic">📤</span> Submit Land Record</li>
+        <li id="nav-citizen-mine" class="sidebar-item" onclick="showTab('citizen-my-submissions-view', event)"><span class="ic">🗂️</span> My Submissions</li>
+      </ul>
+      <div id="verification-section-label" class="sidebar-section-label hidden">Verification</div>
+      <ul class="sidebar-menu">
+        <li id="nav-public-queue" class="sidebar-item hidden" onclick="showTab('public-queue-view', event)"><span class="ic">🧾</span> Public Submissions</li>
       </ul>
       <div id="admin-section-label" class="sidebar-section-label hidden">Administration</div>
       <ul class="sidebar-menu">
@@ -595,6 +684,16 @@
               <li><span class="bullet">2</span> Records with validation issues land in <b>Flagged Documents</b> below — open <em>Double-Check</em> to compare against the original soft copy.</li>
               <li><span class="bullet">3</span> Correct any low-confidence field (highlighted in red), then <b>Approve as Verified</b> or keep it <b>Flagged</b> for further review.</li>
             </ul>
+          </div>
+        </div>
+
+        <div class="card timeline-card">
+          <div class="timeline-card-head">
+            <h3>🔗 Land Ownership Timeline</h3>
+            <span class="desc">Chain of custody across resold parcels — A → B → C → D</span>
+          </div>
+          <div id="ownership-chains" class="chain-list">
+            <div class="empty-chain-state">Loading ownership chains...</div>
           </div>
         </div>
 
@@ -701,6 +800,78 @@
           <tbody></tbody>
         </table>
       </section>
+
+      <!-- 6. Public Submissions Queue (Officer / Admin only) -->
+      <section id="public-queue-view" class="tab-panel hidden">
+        <div class="panel-header"><div><h2>Public Submissions Queue</h2><div class="desc">Citizen-submitted land records awaiting on-site physical verification before entering the official registry.</div></div></div>
+        <table id="public-queue-table">
+          <thead><tr><th>ID</th><th>Land (Khasra · Village)</th><th>Submitted By</th><th>Claimed Owner</th><th>Deadline</th><th>Flags</th><th>Action</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </section>
+
+      <!-- 7. Citizen Portal: Submit -->
+      <section id="citizen-submit-view" class="tab-panel hidden">
+        <div class="panel-header"><div><h2>Submit Your Land Record</h2><div class="desc">Upload your deed for physical verification — it enters the official registry only after a Revenue Officer confirms it on-site.</div></div></div>
+        <div style="display:grid; grid-template-columns: 1.3fr 1fr; gap: 1.4rem; max-width: 950px;">
+          <div class="card">
+            <p>Upload a clear photo or scan of your sale deed / ownership document.</p>
+            <div class="file-drop-area" id="citizen-file-drop-area" onclick="document.getElementById('citizen-file-input').click()">
+              <div class="drop-icon">📁</div>
+              <p style="margin: 0; font-weight: 700;">Click or drag your document here</p>
+              <small style="color: #94a3b8;">Accepts PDF, PNG, JPG</small>
+              <div class="format-chips">
+                <span class="format-chip">PDF</span><span class="format-chip">PNG</span><span class="format-chip">JPG</span><span class="format-chip">JPEG</span>
+              </div>
+              <input type="file" id="citizen-file-input" multiple accept=".pdf,.png,.jpg,.jpeg,.txt" style="display:none;" onchange="handleCitizenFileSelect(event)">
+            </div>
+            <ul id="citizen-staged-file-list" class="file-list"></ul>
+            <div style="margin-top: 1.2rem; display: flex; gap: 0.8rem; align-items: center;">
+              <button type="button" class="btn" id="citizen-upload-btn" onclick="submitCitizenFiles()" disabled>Submit for Verification</button>
+              <button type="button" class="btn" style="background:#64748b; box-shadow:none;" onclick="clearAllCitizenFiles()">Clear All</button>
+              <span id="citizen-upload-status" style="font-size:0.85rem; color:#64748b;"></span>
+            </div>
+          </div>
+          <div class="upload-side-note">
+            <h4>⚙️ What happens next</h4>
+            <div class="step"><span class="num">1</span> Your document is OCR-scanned and your land details (owner, khasra, area...) are auto-read.</div>
+            <div class="step"><span class="num">2</span> It's placed in the Revenue Officer's queue with a fixed deadline for physical inspection.</div>
+            <div class="step"><span class="num">3</span> The officer visits / calls to confirm ownership, area, and boundaries in person.</div>
+            <div class="step"><span class="num">4</span> Once confirmed, it's marked <b>Verified</b> with the officer's name — visible to you under <b>My Submissions</b>.</div>
+            <div class="step"><span class="num">5</span> If two people claim the same land, both are held for verification — no submission is fast-tracked over another.</div>
+            <div class="step"><span class="num">6</span> If the deadline is missed, your case is automatically escalated to a senior authority.</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 8. Citizen Portal: My Submissions -->
+      <section id="citizen-my-submissions-view" class="tab-panel hidden">
+        <div class="panel-header"><div><h2>My Submissions</h2><div class="desc">Track the verification status of every land record you've submitted.</div></div></div>
+        <table id="citizen-submissions-table">
+          <thead><tr><th>ID</th><th>Land (Khasra · Village)</th><th>Status</th><th>Deadline</th><th>Verified By</th><th>Notes</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </section>
+
+      <!-- Physical Verification Checklist Modal (Officer / Admin) -->
+      <div id="checklist-modal" class="modal hidden">
+        <div class="modal-box modal-box-sm">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.4rem;">
+            <h3 style="margin:0;">🧾 Physical Verification Checklist</h3>
+            <button type="button" class="btn-sm" style="background:#64748b; box-shadow:none;" onclick="closeChecklistModal()">✕ Close</button>
+          </div>
+          <p class="submitter-note" id="checklist-context">Confirm each field on-site before approving this record.</p>
+          <div id="checklist-fields"></div>
+          <div class="form-group" style="margin-top:1rem;">
+            <label>Officer Notes (optional)</label>
+            <input type="text" id="checklist-notes" placeholder="e.g. Visited site on 14 Oct, met claimant in person...">
+          </div>
+          <div style="display:flex; gap:0.8rem; margin-top:1.2rem;">
+            <button type="button" class="btn" style="flex:1;" onclick="submitChecklist()">✅ Confirm & Mark Verified</button>
+            <button type="button" class="btn" style="flex:1; background:#64748b; box-shadow:none;" onclick="submitChecklist(true)">🚩 Save as Flagged (Discrepancy Found)</button>
+          </div>
+        </div>
+      </div>
 
       <!-- Two-Panel Split Review Screen with Soft-Copy Viewer & Complete Land Identity -->
       <div id="review-modal" class="modal hidden">
@@ -844,10 +1015,13 @@
   <script>
     let authToken = localStorage.getItem("bv_token") || "";
     let userRole = localStorage.getItem("bv_role") || "";
+    let userFullName = localStorage.getItem("bv_fullname") || "";
     let allRecords = [];
     let selectedFiles = [];
+    let citizenSelectedFiles = [];
     let currentBlobUrl = null;
     let registryStatusFilter = "all";
+    let currentChecklistRecordId = null;
 
     const headers = () => ({ "Authorization": `Bearer ${authToken}`, "Content-Type": "application/json" });
 
@@ -938,11 +1112,57 @@
           const data = await res.json();
           authToken = data.access_token;
           userRole = data.role;
+          userFullName = data.full_name;
           localStorage.setItem("bv_token", authToken);
           localStorage.setItem("bv_role", userRole);
+          localStorage.setItem("bv_fullname", userFullName);
           setupApp();
         } else {
           toast("Invalid login credentials.", "error");
+        }
+      });
+
+      document.getElementById("citizen-login-form").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const fd = new FormData();
+        fd.append("username", document.getElementById("citizen-login-username").value);
+        fd.append("password", document.getElementById("citizen-login-password").value);
+        const res = await fetch("/api/auth/token", { method: "POST", body: fd });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.role !== "Citizen") {
+            toast("This account isn't a citizen account — please use Staff Sign In.", "error");
+            return;
+          }
+          authToken = data.access_token;
+          userRole = data.role;
+          userFullName = data.full_name;
+          localStorage.setItem("bv_token", authToken);
+          localStorage.setItem("bv_role", userRole);
+          localStorage.setItem("bv_fullname", userFullName);
+          setupApp();
+        } else {
+          toast("Invalid username or password.", "error");
+        }
+      });
+
+      document.getElementById("citizen-register-form").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const payload = {
+          full_name: document.getElementById("citizen-reg-fullname").value,
+          phone_number: document.getElementById("citizen-reg-phone").value,
+          username: document.getElementById("citizen-reg-username").value,
+          password: document.getElementById("citizen-reg-password").value
+        };
+        const res = await fetch("/api/auth/register-public", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+        if (res.ok) {
+          toast("Account created! Please sign in.", "success");
+          document.getElementById("citizen-login-username").value = payload.username;
+          document.getElementById("citizen-register-form").reset();
+          setCitizenSubTab("signin");
+        } else {
+          const err = await res.json().catch(() => ({}));
+          toast(err.detail || "Registration failed — try a different username.", "error");
         }
       });
 
@@ -983,21 +1203,70 @@
           renderSelectedFiles();
         });
       }
+
+      const citizenDropArea = document.getElementById("citizen-file-drop-area");
+      if (citizenDropArea) {
+        ["dragenter", "dragover"].forEach(evt =>
+          citizenDropArea.addEventListener(evt, (e) => { e.preventDefault(); e.stopPropagation(); citizenDropArea.classList.add("drag-over"); })
+        );
+        ["dragleave", "drop"].forEach(evt =>
+          citizenDropArea.addEventListener(evt, (e) => { e.preventDefault(); e.stopPropagation(); citizenDropArea.classList.remove("drag-over"); })
+        );
+        citizenDropArea.addEventListener("drop", (e) => {
+          const files = Array.from(e.dataTransfer.files || []);
+          files.forEach(f => {
+            if (!citizenSelectedFiles.some(x => x.name === f.name && x.size === f.size)) {
+              citizenSelectedFiles.push(f);
+            }
+          });
+          renderSelectedCitizenFiles();
+        });
+      }
     });
+
+    function setAuthMode(mode) {
+      document.getElementById("mode-staff-btn").classList.toggle("active", mode === "staff");
+      document.getElementById("mode-citizen-btn").classList.toggle("active", mode === "citizen");
+      document.getElementById("staff-auth-block").classList.toggle("hidden", mode !== "staff");
+      document.getElementById("citizen-auth-block").classList.toggle("hidden", mode !== "citizen");
+    }
+
+    function setCitizenSubTab(tab) {
+      document.getElementById("citizen-signin-tab").classList.toggle("active", tab === "signin");
+      document.getElementById("citizen-register-tab").classList.toggle("active", tab === "register");
+      document.getElementById("citizen-login-form").classList.toggle("hidden", tab !== "signin");
+      document.getElementById("citizen-register-form").classList.toggle("hidden", tab !== "register");
+    }
 
     function setupApp() {
       document.getElementById("auth-panel").classList.add("hidden");
       document.getElementById("app-shell").classList.remove("hidden");
-      document.getElementById("display-name").innerText = userRole;
+      document.getElementById("display-name").innerText = userFullName || userRole;
       document.getElementById("display-role").innerText = userRole;
-      document.getElementById("display-avatar").innerText = (userRole || "U").charAt(0).toUpperCase();
+      document.getElementById("display-avatar").innerText = (userFullName || userRole || "U").charAt(0).toUpperCase();
+
       if (userRole === "Admin") {
         document.getElementById("nav-users").classList.remove("hidden");
         document.getElementById("nav-audit").classList.remove("hidden");
         document.getElementById("admin-section-label").classList.remove("hidden");
       }
+
+      if (userRole === "Admin" || userRole === "Revenue Officer") {
+        document.getElementById("nav-public-queue").classList.remove("hidden");
+        document.getElementById("verification-section-label").classList.remove("hidden");
+      }
+
       tickClock();
-      loadRecords();
+
+      if (userRole === "Citizen") {
+        document.getElementById("staff-workspace-menu").classList.add("hidden");
+        document.getElementById("citizen-workspace-menu").classList.remove("hidden");
+        document.querySelectorAll(".tab-panel").forEach(el => el.classList.add("hidden"));
+        document.getElementById("citizen-submit-view").classList.remove("hidden");
+        loadMySubmissions();
+      } else {
+        loadRecords();
+      }
     }
 
     function logout() {
@@ -1010,9 +1279,15 @@
       document.querySelectorAll(".sidebar-item").forEach(el => el.classList.remove("active"));
       document.getElementById(tabId).classList.remove("hidden");
       if (evt) evt.currentTarget.classList.add("active");
+
+      if (userRole === "Citizen") {
+        if (tabId === "citizen-my-submissions-view") loadMySubmissions();
+        return;
+      }
       loadRecords();
       if (tabId === "users-view") loadUsers();
       if (tabId === "audit-view") loadAudit();
+      if (tabId === "public-queue-view") loadPublicQueue();
     }
 
     function handleFileSelect(e) {
@@ -1078,6 +1353,220 @@
       }
     }
 
+    /* ---------------- Citizen Portal: Submit ---------------- */
+    function handleCitizenFileSelect(e) {
+      const files = Array.from(e.target.files);
+      files.forEach(f => {
+        if (!citizenSelectedFiles.some(x => x.name === f.name && x.size === f.size)) {
+          citizenSelectedFiles.push(f);
+        }
+      });
+      renderSelectedCitizenFiles();
+    }
+
+    function removeCitizenFile(index) {
+      citizenSelectedFiles.splice(index, 1);
+      renderSelectedCitizenFiles();
+    }
+
+    function clearAllCitizenFiles() {
+      citizenSelectedFiles = [];
+      document.getElementById("citizen-file-input").value = "";
+      renderSelectedCitizenFiles();
+    }
+
+    function renderSelectedCitizenFiles() {
+      const list = document.getElementById("citizen-staged-file-list");
+      list.innerHTML = "";
+      citizenSelectedFiles.forEach((file, index) => {
+        const li = document.createElement("li");
+        li.className = "file-item";
+        li.innerHTML = `
+          <span>📄 <b>${escapeHtml(file.name)}</b> (${(file.size / 1024).toFixed(1)} KB)</span>
+          <button type="button" class="btn-remove-file" onclick="removeCitizenFile(${index})">✕</button>
+        `;
+        list.appendChild(li);
+      });
+      document.getElementById("citizen-upload-btn").disabled = citizenSelectedFiles.length === 0;
+    }
+
+    async function submitCitizenFiles() {
+      if (!citizenSelectedFiles.length) return;
+      const fd = new FormData();
+      citizenSelectedFiles.forEach(f => fd.append("files", f));
+
+      const btn = document.getElementById("citizen-upload-btn");
+      const originalLabel = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = `<span class="spinner"></span>Submitting...`;
+      document.getElementById("citizen-upload-status").innerText = "Reading your document - this can take a few seconds...";
+
+      const res = await fetch("/api/public/submit", { method: "POST", headers: { "Authorization": `Bearer ${authToken}` }, body: fd });
+
+      btn.disabled = false;
+      btn.innerHTML = originalLabel;
+
+      if (res.ok) {
+        toast("Submitted! A Revenue Officer will physically verify it soon.", "success");
+        clearAllCitizenFiles();
+        document.getElementById("citizen-upload-status").innerText = "";
+        showTab("citizen-my-submissions-view");
+        document.getElementById("nav-citizen-mine").click();
+      } else {
+        toast("Submission error - please check the file and try again.", "error");
+        document.getElementById("citizen-upload-status").innerText = "";
+      }
+    }
+
+    function daysUntil(dateStr) {
+      if (!dateStr) return null;
+      const target = new Date(dateStr + "T00:00:00");
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      return Math.round((target - today) / 86400000);
+    }
+
+    function deadlineChipHtml(rec) {
+      if (rec.status === "Verified") return `<span class="deadline-chip">—</span>`;
+      if (!rec.verification_deadline) return `<span class="deadline-chip">No deadline</span>`;
+      if (rec.escalated) return `<span class="escalation-tag">Escalated</span>`;
+      const d = daysUntil(rec.verification_deadline);
+      if (d < 0) return `<span class="deadline-chip deadline-overdue">Overdue</span>`;
+      if (d <= 2) return `<span class="deadline-chip deadline-urgent">${d} day${d === 1 ? '' : 's'} left</span>`;
+      return `<span class="deadline-chip">${d} days left (${rec.verification_deadline})</span>`;
+    }
+
+    async function loadMySubmissions() {
+      const res = await fetch("/api/public/my-submissions", { headers: headers() });
+      const tbody = document.querySelector("#citizen-submissions-table tbody");
+      if (!res.ok) { tbody.innerHTML = "<tr><td colspan='6'><div class='empty-state'>Could not load your submissions.</div></td></tr>"; return; }
+      const rows = await res.json();
+      tbody.innerHTML = "";
+      if (!rows.length) {
+        tbody.innerHTML = "<tr><td colspan='6'><div class='empty-state'><span class='ic'>🗂️</span>You haven't submitted any land records yet.</div></td></tr>";
+        return;
+      }
+      rows.forEach(r => {
+        const tr = document.createElement("tr");
+        const statusClass = "status-" + r.status.toLowerCase().replace(/ /g, '-');
+        const conflictNote = r.has_conflict ? `<span class="conflict-tag">⚠ Competing Claim</span>` : "";
+        tr.innerHTML = `
+          <td>#${r.id}</td>
+          <td>${r.khasra_number || '-'} · ${r.village || '-'}</td>
+          <td><span class="badge-status ${statusClass}">${r.status}</span> ${conflictNote}</td>
+          <td>${deadlineChipHtml(r)}</td>
+          <td>${r.verified_by ? `✅ ${escapeHtml(r.verified_by)}<br><small style="color:#94a3b8;">${r.verified_at || ''}</small>` : '-'}</td>
+          <td style="max-width:260px; font-size:0.8rem; color:#64748b;">${(r.validation_flags || []).join('; ') || '-'}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+
+    /* ---------------- Officer: Public Submissions Queue ---------------- */
+    let publicQueueRecords = [];
+
+    async function loadPublicQueue() {
+      const res = await fetch("/api/officer/public-queue", { headers: headers() });
+      const tbody = document.querySelector("#public-queue-table tbody");
+      if (!res.ok) { tbody.innerHTML = "<tr><td colspan='7'><div class='empty-state'>Could not load the public queue.</div></td></tr>"; return; }
+      publicQueueRecords = await res.json();
+      tbody.innerHTML = "";
+      if (!publicQueueRecords.length) {
+        tbody.innerHTML = "<tr><td colspan='7'><div class='empty-state'><span class='ic'>🧾</span>No public submissions yet.</div></td></tr>";
+        return;
+      }
+      publicQueueRecords.forEach(r => {
+        const tr = document.createElement("tr");
+        const conflictNote = r.has_conflict ? `<span class="conflict-tag">⚠ Competing Claim</span>` : "";
+        const flagCount = (r.validation_flags || []).length;
+        tr.innerHTML = `
+          <td>#${r.id}</td>
+          <td>${r.khasra_number || '-'} · ${r.village || '-'}</td>
+          <td>${escapeHtml(r.submitter_name || r.uploaded_by || '-')}<br><small style="color:#94a3b8;">${escapeHtml(r.submitter_phone || '')}</small></td>
+          <td>${escapeHtml(r.owner_name || '-')}</td>
+          <td>${deadlineChipHtml(r)}</td>
+          <td>${flagCount ? `<span class="badge-flag">${flagCount} Flag(s)</span>` : '-'} ${conflictNote}</td>
+          <td>${r.status === "Verified" ? `<span class="badge-status status-verified">Verified</span>` : `<button class="btn btn-sm" onclick="openChecklistModal(${r.id})">Physically Verify</button>`}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+
+    function openChecklistModal(recordId) {
+      const rec = publicQueueRecords.find(r => r.id === recordId);
+      if (!rec) return;
+      currentChecklistRecordId = recordId;
+
+      const fieldMap = {
+        "Owner / Claimant Name": rec.owner_name,
+        "Seller Name": rec.seller_name,
+        "Buyer Name": rec.buyer_name,
+        "Khasra Number": rec.khasra_number,
+        "Khata Number": rec.khata_number,
+        "Plot Number": rec.plot_number,
+        "Village": rec.village,
+        "Tehsil": rec.tehsil,
+        "District": rec.district,
+        "Total Area": rec.total_area,
+        "Registration Date": rec.registration_date,
+        "Boundaries": rec.boundaries_desc,
+      };
+
+      const wrap = document.getElementById("checklist-fields");
+      wrap.innerHTML = "";
+      Object.entries(fieldMap).forEach(([label, value]) => {
+        if (value === null || value === undefined || value === "") return;
+        const fieldId = "chk-" + label.replace(/[^a-zA-Z0-9]/g, "");
+        const item = document.createElement("div");
+        item.className = "checklist-item";
+        item.innerHTML = `
+          <input type="checkbox" id="${fieldId}" data-field="${escapeHtml(label)}">
+          <label for="${fieldId}">${label} confirmed on-site
+            <span class="field-value">Claimed value: ${escapeHtml(String(value))}</span>
+          </label>
+        `;
+        wrap.appendChild(item);
+      });
+
+      const conflictWarning = rec.has_conflict
+        ? " ⚠ This land has a competing claim from another submission — verify carefully before approving."
+        : "";
+      document.getElementById("checklist-context").innerText =
+        `Record #${rec.id} · Submitted by ${rec.submitter_name || rec.uploaded_by || 'Unknown'}.${conflictWarning}`;
+      document.getElementById("checklist-notes").value = "";
+      document.getElementById("checklist-modal").classList.remove("hidden");
+    }
+
+    function closeChecklistModal() {
+      document.getElementById("checklist-modal").classList.add("hidden");
+      currentChecklistRecordId = null;
+    }
+
+    async function submitChecklist(forceFlag) {
+      if (!currentChecklistRecordId) return;
+      const checks = {};
+      document.querySelectorAll("#checklist-fields input[type='checkbox']").forEach(cb => {
+        checks[cb.dataset.field] = forceFlag ? false : cb.checked;
+      });
+      const notes = document.getElementById("checklist-notes").value;
+
+      const res = await fetch(`/api/officer/verify-checklist/${currentChecklistRecordId}`, {
+        method: "POST", headers: headers(), body: JSON.stringify({ checks, notes })
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        toast(
+          data.status === "Verified" ? `Record #${currentChecklistRecordId} verified by ${data.verified_by}.` : "Saved as Flagged — discrepancies recorded.",
+          data.status === "Verified" ? "success" : "warning"
+        );
+        closeChecklistModal();
+        loadPublicQueue();
+      } else {
+        toast("Could not save verification.", "error");
+      }
+    }
+
     async function loadRecords() {
       const res = await fetch("/api/records", { headers: headers() });
       if (!res.ok) return;
@@ -1097,6 +1586,52 @@
       renderDashboardTable("dash-pending-table", pending, false);
       renderDashboardTable("dash-verified-table", verified, false);
       filterRegistry();
+      loadOwnershipChains();
+    }
+
+    async function loadOwnershipChains() {
+      const wrap = document.getElementById("ownership-chains");
+      if (!wrap) return;
+      try {
+        const res = await fetch("/api/timeline/chains", { headers: headers() });
+        if (!res.ok) {
+          wrap.innerHTML = `<div class="empty-chain-state">Could not load ownership timeline.</div>`;
+          return;
+        }
+        const chains = await res.json();
+        if (!chains.length) {
+          wrap.innerHTML = `<div class="empty-chain-state">🔗 No resold parcels yet — a chain appears here as soon as a land parcel (same Khasra + Village) is registered under 2 or more deeds.</div>`;
+          return;
+        }
+        wrap.innerHTML = "";
+        chains.forEach(c => {
+          const block = document.createElement("div");
+          block.className = "chain-block";
+          let hopsHtml = `<div class="hop-pill">${escapeHtml(c.hops[0].seller)}<span class="hp-date">${c.hops[0].date || 'n/a'}</span></div>`;
+          c.hops.forEach((h, i) => {
+            const isLast = i === c.hops.length - 1;
+            const cls = !h.continuity_ok ? "hop-pill hp-broken" : (isLast ? "hop-pill hp-current" : "hop-pill");
+            const title = !h.continuity_ok ? "Chain of title break detected" : (isLast ? "Current recorded owner" : "");
+            hopsHtml += `<span class="hop-arrow">→</span><div class="${cls}" title="${title}">${escapeHtml(h.buyer)}<span class="hp-date">${h.date || 'n/a'}</span></div>`;
+          });
+          block.innerHTML = `
+            <div class="chain-block-head">
+              <div><span class="land-id">Khasra #${escapeHtml(c.khasra_number)}</span> <span class="land-loc">· ${escapeHtml(c.village)}${c.district ? ', ' + escapeHtml(c.district) : ''}</span></div>
+              ${c.has_break ? `<span class="chain-break-tag">Title Break</span>` : `<span class="chain-transfers-tag">${c.total_transfers} transfers</span>`}
+            </div>
+            <div class="chain-row">${hopsHtml}</div>
+          `;
+          wrap.appendChild(block);
+        });
+      } catch (err) {
+        wrap.innerHTML = `<div class="empty-chain-state">Could not load ownership timeline.</div>`;
+      }
+    }
+
+    function escapeHtml(str) {
+      const div = document.createElement("div");
+      div.innerText = str == null ? "" : String(str);
+      return div.innerHTML;
     }
 
     function renderDashboardTable(tableId, records, isFlagged) {
