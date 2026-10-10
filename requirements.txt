@@ -8,3 +8,25 @@ Pillow>=10.0.0
 PyPDF2>=3.0.0
 pdf2image>=1.16.3
  
+ # --- Web app ---
+fastapi
+uvicorn[standard]
+python-multipart
+python-jose[cryptography]
+pydantic
+
+# --- Imaging / PDF ---
+numpy<2.4
+Pillow
+PyPDF2
+PyMuPDF            # renders scanned-PDF pages (no Poppler install needed)
+
+# --- OCR: PaddleOCR (default) ---
+paddlepaddle
+paddleocr
+# NOTE: do NOT also install "opencv-python". paddleocr brings opencv-contrib-python,
+# which provides the same `cv2` module; having both can break imports.
+
+# --- OCR: Tesseract (only if you set OCR_ENGINE=tesseract) ---
+# pytesseract        # also needs the Tesseract program itself installed
+# pdf2image          # optional; needs Poppler on Windows (PyMuPDF already covers PDFs)
