@@ -2,6 +2,8 @@ import os
 import re
 import io
 import json
+import threading
+import traceback
 import sqlite3
 import hashlib
 from datetime import datetime, timedelta
@@ -23,20 +25,55 @@ except ImportError:
     CV2_AVAILABLE = False
 
 try:
-    import pytesseract
     from PIL import Image
-    possible_paths = [
-        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
-        r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
-        os.path.expandvars(r"%LOCALAPPDATA%\Programs\Tesseract-OCR\tesseract.exe")
-    ]
-    for p in possible_paths:
-        if os.path.exists(p):
-            pytesseract.pytesseract.tesseract_cmd = p
-            break
-    OCR_AVAILABLE = True
 except ImportError:
-    OCR_AVAILABLE = False
+    Image = None
+
+# ----------------- OCR engine selection -----------------
+# Choose the engine with an environment variable - no code change needed:
+#   PowerShell:   $env:OCR_ENGINE="tesseract"      (or "paddle")
+#   cmd.exe:      set OCR_ENGINE=tesseract
+#   Mac/Linux:    export OCR_ENGINE=tesseract
+# Default = PaddleOCR.
+OCR_ENGINE = os.getenv("OCR_ENGINE", "paddle").strip().lower()
+if OCR_ENGINE not in ("paddle", "tesseract"):
+    print(f"[OCR] Unknown OCR_ENGINE '{OCR_ENGINE}' - using 'paddle'")
+    OCR_ENGINE = "paddle"
+
+PADDLE_LANG = os.getenv("PADDLE_OCR_LANG", "en")        # later: "hi" (Hindi / Devanagari), etc.
+TESSERACT_LANG = os.getenv("TESSERACT_LANG", "eng")     # later: "eng+hin"
+PADDLE_DOC_ORIENTATION = os.getenv("PADDLE_DOC_ORIENTATION", "0") == "1"   # auto-fix rotated scans (extra small model)
+PADDLE_ENABLE_MKLDNN = os.getenv("PADDLE_ENABLE_MKLDNN", "0") == "1"       # off = safest on a fresh Windows setup
+
+# Skip PaddleX's start-up "can I reach the model host" check (can stall on slow networks)
+os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
+
+OCR_AVAILABLE = False
+OCR_INIT_ERROR = None
+
+if OCR_ENGINE == "tesseract":
+    try:
+        import pytesseract
+        possible_paths = [
+            r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+            r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+            os.path.expandvars(r"%LOCALAPPDATA%\Programs\Tesseract-OCR\tesseract.exe")
+        ]
+        for p in possible_paths:
+            if os.path.exists(p):
+                pytesseract.pytesseract.tesseract_cmd = p
+                break
+        OCR_AVAILABLE = True
+    except ImportError as e:
+        OCR_INIT_ERROR = e
+else:
+    try:
+        from paddleocr import PaddleOCR
+        OCR_AVAILABLE = True
+    except Exception as e:   # ImportError, or a native-library error from paddle itself
+        OCR_INIT_ERROR = e
+
+print(f"[OCR] engine={OCR_ENGINE}  available={OCR_AVAILABLE}" + (f"  error={OCR_INIT_ERROR!r}" if OCR_INIT_ERROR else ""))
 
 try:
     from PyPDF2 import PdfReader
@@ -49,6 +86,16 @@ try:
     PDF2IMAGE_AVAILABLE = True
 except ImportError:
     PDF2IMAGE_AVAILABLE = False
+
+try:
+    import pymupdf as fitz  # PyMuPDF - renders PDF pages without needing Poppler
+    FITZ_AVAILABLE = True
+except ImportError:
+    try:
+        import fitz  # older PyMuPDF releases
+        FITZ_AVAILABLE = True
+    except ImportError:
+        FITZ_AVAILABLE = False
 
 SECRET_KEY = "bharat-vault-secure-token-secret-key-2026"
 ALGORITHM = "HS256"
@@ -222,7 +269,7 @@ def get_current_user(
 
 # ----------------- OCR & Preprocessing -----------------
 
-def preprocess_image_for_ocr(image_bytes: bytes) -> Image.Image:
+def preprocess_image_for_ocr(image_bytes: bytes) -> "Image.Image":
     if not CV2_AVAILABLE:
         return Image.open(io.BytesIO(image_bytes))
     nparr = np.frombuffer(image_bytes, np.uint8)
@@ -240,6 +287,147 @@ def preprocess_image_for_ocr(image_bytes: bytes) -> Image.Image:
     thresh = cv2.adaptiveThreshold(denoised, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 15)
     return Image.fromarray(thresh)
 
+# ---- PaddleOCR ----
+
+_paddle_engine = None
+_paddle_lock = threading.Lock()
+
+def _get_paddle_engine():
+    """Create the PaddleOCR model once and reuse it (first call downloads/loads the models)."""
+    global _paddle_engine
+    if _paddle_engine is None:
+        with _paddle_lock:
+            if _paddle_engine is None:
+                try:
+                    _paddle_engine = PaddleOCR(
+                        lang=PADDLE_LANG,
+                        use_doc_orientation_classify=PADDLE_DOC_ORIENTATION,
+                        use_doc_unwarping=False,
+                        use_textline_orientation=False,
+                        enable_mkldnn=PADDLE_ENABLE_MKLDNN,
+                    )
+                except TypeError:
+                    # very old PaddleOCR 2.x signature
+                    _paddle_engine = PaddleOCR(lang=PADDLE_LANG, use_angle_cls=True)
+    return _paddle_engine
+
+def preprocess_image_for_paddle(image_bytes: bytes):
+    """PaddleOCR's detector/recognizer are trained on natural images, so unlike Tesseract they do
+    better on the original colour image than on a hard-binarised one. Only upscale small images."""
+    if CV2_AVAILABLE:
+        img = cv2.imdecode(np.frombuffer(image_bytes, np.uint8), cv2.IMREAD_COLOR)
+        if img is None:
+            raise ValueError("Could not decode image")
+        h, w = img.shape[:2]
+        if w < 1200:
+            scale = 1200.0 / w
+            img = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+        return img
+    import numpy as _np
+    return _np.array(Image.open(io.BytesIO(image_bytes)).convert("RGB"))[:, :, ::-1].copy()
+
+def _paddle_items(results):
+    """Normalise PaddleOCR output (3.x `predict` or 2.x `ocr`) to [(x1, y1, x2, y2, text, score)]."""
+    items = []
+    for res in results or []:
+        if res is None:
+            continue
+        if hasattr(res, "get") and res.get("rec_texts") is not None:           # PaddleOCR 3.x
+            texts = res["rec_texts"]
+            scores = res.get("rec_scores")
+            if scores is None:
+                scores = [1.0] * len(texts)
+            polys = res.get("rec_polys")
+            if polys is None:
+                polys = res.get("dt_polys")
+            for poly, text, score in zip(polys, texts, scores):
+                xs = [float(pt[0]) for pt in poly]
+                ys = [float(pt[1]) for pt in poly]
+                items.append((min(xs), min(ys), max(xs), max(ys), text, float(score)))
+        elif isinstance(res, list):                                             # PaddleOCR 2.x
+            for line in res:
+                poly, (text, score) = line[0], line[1]
+                xs = [float(pt[0]) for pt in poly]
+                ys = [float(pt[1]) for pt in poly]
+                items.append((min(xs), min(ys), max(xs), max(ys), text, float(score)))
+    return items
+
+def _assemble_lines(items) -> str:
+    """Rebuild reading-order text from detected boxes: boxes on the same visual row are joined
+    left-to-right (a big horizontal gap becomes a newline, so 'District: X   Tehsil: Y' stays separable)."""
+    items = [it for it in items if it[4] and it[4].strip()]
+    if not items:
+        return ""
+    heights = sorted(it[3] - it[1] for it in items)
+    med_h = heights[len(heights) // 2] or 1.0
+    items.sort(key=lambda it: (it[1] + it[3]) / 2)
+
+    rows = []
+    for it in items:
+        yc = (it[1] + it[3]) / 2
+        if rows and abs(yc - rows[-1]["yc"]) <= 0.6 * med_h:
+            row = rows[-1]
+            row["items"].append(it)
+            row["yc"] = (row["yc"] * (len(row["items"]) - 1) + yc) / len(row["items"])
+        else:
+            rows.append({"yc": yc, "items": [it]})
+
+    lines = []
+    for row in rows:
+        ordered = sorted(row["items"], key=lambda it: it[0])
+        line = ordered[0][4].strip()
+        for prev, cur in zip(ordered, ordered[1:]):
+            sep = "\n" if (cur[0] - prev[2]) > 3 * med_h else " "
+            line += sep + cur[4].strip()
+        lines.append(line)
+    return "\n".join(lines)
+
+def _paddle_read(image_bytes: bytes):
+    """Returns (text, mean_confidence)."""
+    engine = _get_paddle_engine()
+    img = preprocess_image_for_paddle(image_bytes)
+    try:
+        results = engine.predict(img)
+    except AttributeError:          # PaddleOCR 2.x
+        results = engine.ocr(img, cls=True)
+    items = _paddle_items(results)
+    if not items:
+        return "", 0.0
+    mean_conf = sum(it[5] for it in items) / len(items)
+    return _assemble_lines(items), mean_conf
+
+# ---- engine dispatch ----
+
+def _ocr_image_bytes(image_bytes: bytes, retry_sparse: bool = True):
+    """Run the selected engine on ONE image. Returns (text, mean_confidence or None)."""
+    if OCR_ENGINE == "paddle":
+        return _paddle_read(image_bytes)
+    processed_pil = preprocess_image_for_ocr(image_bytes)
+    text = pytesseract.image_to_string(processed_pil, lang=TESSERACT_LANG, config=r"--oem 3 --psm 6")
+    if retry_sparse and len(text.strip()) < 50:
+        # Sparse result - retry with default page segmentation before giving up
+        text = pytesseract.image_to_string(processed_pil, lang=TESSERACT_LANG)
+    return text, None
+
+def _render_pdf_pages(file_content: bytes, dpi: int) -> List[bytes]:
+    """PDF -> one PNG (bytes) per page. PyMuPDF first (no Poppler install needed), pdf2image as fallback."""
+    if FITZ_AVAILABLE:
+        doc = fitz.open(stream=file_content, filetype="pdf")
+        try:
+            return [page.get_pixmap(dpi=dpi).tobytes("png") for page in doc]
+        finally:
+            doc.close()
+    pages = []
+    for page_img in convert_from_bytes(file_content, dpi=dpi):
+        buf = io.BytesIO()
+        page_img.save(buf, format="PNG")
+        pages.append(buf.getvalue())
+    return pages
+
+def _log_ocr_error(where: str):
+    print(f"[OCR] {OCR_ENGINE} failed during {where}:")
+    traceback.print_exc()
+
 def run_ocr(file_content: bytes, filename: str) -> (str, float):
     ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
     text = ""
@@ -252,13 +440,15 @@ def run_ocr(file_content: bytes, filename: str) -> (str, float):
     if ext in ("png", "jpg", "jpeg", "bmp", "tiff", "tif"):
         if OCR_AVAILABLE:
             try:
-                processed_pil = preprocess_image_for_ocr(file_content)
-                text = pytesseract.image_to_string(processed_pil, lang="eng", config=r"--oem 3 --psm 6")
+                text, conf = _ocr_image_bytes(file_content)
                 if len(text.strip()) < 50:
-                    # Sparse result - retry with default page segmentation before giving up
-                    text = pytesseract.image_to_string(processed_pil, lang="eng")
-                quality = 0.90 if len(text.strip()) >= 50 else 0.55
+                    quality = 0.55
+                elif conf is not None:
+                    quality = round(min(0.99, conf), 2)   # real engine confidence (PaddleOCR)
+                else:
+                    quality = 0.90
             except Exception:
+                _log_ocr_error("image upload")
                 text = ""
                 quality = 0.0
         else:
@@ -275,15 +465,13 @@ def run_ocr(file_content: bytes, filename: str) -> (str, float):
         # Most land-record scans are image-only PDFs (no embedded text layer), so
         # PyPDF2 alone returns empty/near-empty text. Fall back to rendering each
         # page as an image and running the same OCR pipeline used for uploads.
-        if len(text.strip()) < 50 and PDF2IMAGE_AVAILABLE and OCR_AVAILABLE:
+        if len(text.strip()) < 50 and (FITZ_AVAILABLE or PDF2IMAGE_AVAILABLE) and OCR_AVAILABLE:
             try:
-                pages = convert_from_bytes(file_content, dpi=300)
+                dpi = 200 if OCR_ENGINE == "paddle" else 300   # Paddle is heavier on CPU; 200 dpi is plenty
                 ocr_parts = []
-                for page_img in pages:
-                    buf = io.BytesIO()
-                    page_img.save(buf, format="PNG")
-                    processed_pil = preprocess_image_for_ocr(buf.getvalue())
-                    ocr_parts.append(pytesseract.image_to_string(processed_pil, lang="eng", config=r"--oem 3 --psm 6"))
+                for page_png in _render_pdf_pages(file_content, dpi=dpi):
+                    page_text, _ = _ocr_image_bytes(page_png, retry_sparse=False)
+                    ocr_parts.append(page_text)
                 ocr_text = "\n".join(ocr_parts).strip()
                 if len(ocr_text) > len(text.strip()):
                     text = ocr_text
@@ -291,7 +479,7 @@ def run_ocr(file_content: bytes, filename: str) -> (str, float):
                 elif text.strip():
                     quality = 0.90
             except Exception:
-                pass
+                _log_ocr_error("scanned-PDF fallback")
         elif text.strip():
             quality = 0.95  # native PDF text layer - most reliable source
 
@@ -299,6 +487,19 @@ def run_ocr(file_content: bytes, filename: str) -> (str, float):
             quality = 0.0
 
     return text.strip(), quality
+
+def _warm_up_paddle():
+    """Load PaddleOCR in the background at start-up so the first upload isn't slow
+    (the very first run also downloads the models once - needs internet)."""
+    try:
+        _get_paddle_engine()
+        print("[OCR] PaddleOCR models loaded and ready.")
+    except Exception:
+        print("[OCR] PaddleOCR failed to load:")
+        traceback.print_exc()
+
+if OCR_ENGINE == "paddle" and OCR_AVAILABLE:
+    threading.Thread(target=_warm_up_paddle, daemon=True).start()
 
 KNOWN_DISTRICTS = ["Jaipur", "Jodhpur", "Udaipur", "Kota", "Ajmer", "Alwar", "Bikaner", "Bharatpur", "Sikar", "Chomu", "Amer"]
  
