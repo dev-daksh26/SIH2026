@@ -8,6 +8,8 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
   <style>
     :root {
       --primary: #4f46e5;
@@ -330,6 +332,7 @@
 
     .tips-card ul { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 0.85rem; }
     .tips-card li { display: flex; gap: 0.7rem; align-items: flex-start; font-size: 0.85rem; color: #475569; line-height: 1.45; }
+    .tips-card li .txt { flex: 1; min-width: 0; }
     .tips-card li .bullet {
       width: 26px; height: 26px; border-radius: 8px; flex-shrink: 0; display: flex; align-items: center;
       justify-content: center; font-size: 0.85rem; background: var(--primary-light); color: var(--primary); margin-top: 0.05rem;
@@ -370,6 +373,7 @@
     }
     .upload-side-note h4 { color: white; margin: 0 0 0.6rem; font-size: 0.95rem; }
     .upload-side-note .step { display: flex; gap: 0.65rem; margin-bottom: 0.8rem; }
+    .upload-side-note .step .txt { flex: 1; min-width: 0; }
     .upload-side-note .step .num {
       width: 22px; height: 22px; border-radius: 50%; background: rgba(255,255,255,0.12);
       display: flex; align-items: center; justify-content: center; font-size: 0.72rem; font-weight: 700; color: white; flex-shrink: 0;
@@ -391,6 +395,29 @@
     .status-flagged::before { animation: pulseDot 1.6s infinite; }
     .status-awaiting-physical-verification { background: #ede9fe; color: #7c3aed; }
     .status-awaiting-physical-verification::before { animation: pulseDot 1.6s infinite; }
+
+
+    /* ---------------- Citizen Status Tracker ---------------- */
+    .tracker-list { display: flex; flex-direction: column; gap: 1rem; margin-bottom: 1.6rem; }
+    .tracker-card { background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.2rem 1.4rem 1.3rem; box-shadow: var(--shadow-sm); animation: fadeInUp 0.35s ease both; }
+    .tracker-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; flex-wrap: wrap; margin-bottom: 1.2rem; }
+    .tracker-title { font-family: 'Manrope', sans-serif; font-weight: 800; font-size: 0.98rem; }
+    .tracker-sub { font-size: 0.78rem; color: #64748b; margin-top: 0.15rem; }
+    .tracker-steps { display: grid; grid-template-columns: repeat(3, 1fr); position: relative; }
+    .tracker-step { position: relative; text-align: center; padding: 0 0.5rem; }
+    .tracker-step::before { content: ""; position: absolute; top: 17px; left: -50%; width: 100%; height: 3px; background: #e2e8f0; z-index: 0; }
+    .tracker-step:first-child::before { display: none; }
+    .tracker-step.done::before, .tracker-step.current::before { background: var(--success); }
+    .tracker-step.current.alert::before { background: var(--success); }
+    .tracker-dot { position: relative; z-index: 1; width: 36px; height: 36px; border-radius: 50%; margin: 0 auto 0.55rem; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 0.85rem; background: #f1f5f9; color: #94a3b8; border: 2px solid #e2e8f0; transition: all 0.2s ease; }
+    .tracker-step.done .tracker-dot { background: var(--success); border-color: var(--success); color: #fff; }
+    .tracker-step.current .tracker-dot { background: #fff; border-color: var(--primary); color: var(--primary); box-shadow: 0 0 0 5px rgba(79,70,229,0.14); }
+    .tracker-step.current.alert .tracker-dot { border-color: var(--danger); color: var(--danger); box-shadow: 0 0 0 5px rgba(239,68,68,0.14); }
+    .tracker-label { font-size: 0.8rem; font-weight: 700; color: #94a3b8; line-height: 1.3; }
+    .tracker-step.done .tracker-label, .tracker-step.current .tracker-label { color: var(--text); }
+    .tracker-note { font-size: 0.7rem; color: #94a3b8; margin-top: 0.15rem; }
+    .tracker-alert { margin-top: 1rem; background: #fef2f2; border: 1px solid #fecaca; color: #b91c1c; border-radius: 10px; padding: 0.55rem 0.8rem; font-size: 0.78rem; }
+    @media (max-width: 640px) { .tracker-label { font-size: 0.7rem; } .tracker-note { display: none; } }
 
     .escalation-tag, .conflict-tag { font-size: 0.68rem; font-weight: 800; padding: 0.22rem 0.6rem; border-radius: 20px; display: inline-flex; align-items: center; gap: 0.3rem; white-space: nowrap; }
     .escalation-tag { background: #fee2e2; color: var(--danger); }
@@ -509,6 +536,24 @@
     .toast.warning { border-left-color: var(--warning); }
     .toast .toast-icon { font-size: 1.1rem; }
     .toast.hide { animation: slideOutRight 0.25s ease forwards; }
+
+    /* ---------------- GIS Land Map ---------------- */
+    .gis-tabs { display:flex; gap:0.4rem; margin-bottom:0.5rem; }
+    .gis-tab { border:1.5px solid var(--border); background:white; padding:0.35rem 0.8rem; border-radius:20px; font-size:0.8rem; font-weight:700; color:#475569; cursor:pointer; font-family:inherit; }
+    .gis-tab.active { background:var(--primary); color:white; border-color:var(--primary); }
+    #gis-map-box { height:600px; border-radius:13px; overflow:hidden; border:1px solid var(--border); position:relative; }
+    #gis-map { width:100%; height:100%; }
+    #gis-info { position:absolute; left:10px; bottom:10px; z-index:900; background:white; padding:0.5rem 0.8rem; border-radius:10px; font-size:0.8rem; max-width:340px; line-height:1.45; box-shadow:var(--shadow-md); }
+    .gis-tip { background:rgba(255,255,255,0.92); border:none; box-shadow:none; font-size:11px; font-weight:700; padding:1px 5px; color:#334155; }
+    .ocr-acc { margin-top:1rem; padding:0.7rem 0.9rem; border:1px solid var(--border); border-radius:12px; background:#f8fafc; font-size:0.8rem; }
+    .ocr-acc-title { font-weight:800; font-size:0.9rem; color:#0f172a; }
+    .ocr-acc-sub { font-weight:600; font-size:0.72rem; color:#64748b; margin-left:0.4rem; }
+    .ocr-acc-bar { height:7px; border-radius:6px; background:#e2e8f0; margin:0.45rem 0; overflow:hidden; }
+    .ocr-acc-bar > div { height:100%; border-radius:6px; transition:width .25s; }
+    .ocr-acc-change { color:#475569; font-size:0.76rem; margin-top:0.15rem; }
+    .ocr-acc-note { color:#64748b; font-size:0.75rem; margin-top:0.3rem; }
+    .ocr-acc-overall { margin-top:0.5rem; padding-top:0.4rem; border-top:1px dashed var(--border); color:#334155; font-size:0.76rem; }
+    #gis-empty { position:absolute; inset:0; z-index:1100; display:flex; align-items:center; justify-content:center; text-align:center; padding:2rem; background:#f8fafc; color:#64748b; font-size:0.88rem; }
   </style>
 </head>
 <body>
@@ -614,10 +659,6 @@
         <li id="nav-audit" class="sidebar-item hidden" onclick="showTab('audit-view', event)"><span class="ic">🛡️</span> Audit Log</li>
       </ul>
       <div class="sidebar-spacer"></div>
-      <div class="sidebar-help">
-        <b>💡 Quick tip</b>
-        Click <em>Double-Check</em> on any record to compare it against the original soft copy before approving.
-      </div>
       <div class="sidebar-footer">
         <div class="user-info">
           <div class="avatar" id="display-avatar">U</div>
@@ -680,9 +721,9 @@
           <div class="card tips-card">
             <h3>🧭 Verification Playbook</h3>
             <ul>
-              <li><span class="bullet">1</span> Ingest scanned deeds from the <b>Upload Files</b> tab — OCR runs automatically and fields are auto-classified.</li>
-              <li><span class="bullet">2</span> Records with validation issues land in <b>Flagged Documents</b> below — open <em>Double-Check</em> to compare against the original soft copy.</li>
-              <li><span class="bullet">3</span> Correct any low-confidence field (highlighted in red), then <b>Approve as Verified</b> or keep it <b>Flagged</b> for further review.</li>
+              <li><span class="bullet">1</span><span class="txt">Ingest scanned deeds from the <b>Upload Files</b> tab — OCR runs automatically and fields are auto-classified.</span></li>
+              <li><span class="bullet">2</span><span class="txt">Records with validation issues land in <b>Flagged Documents</b> below — open <em>Double-Check</em> to compare against the original soft copy.</span></li>
+              <li><span class="bullet">3</span><span class="txt">Correct any low-confidence field (highlighted in red), then <b>Approve as Verified</b> or keep it <b>Flagged</b> for further review.</span></li>
             </ul>
           </div>
         </div>
@@ -740,10 +781,10 @@
           </div>
           <div class="upload-side-note">
             <h4>⚙️ What happens next</h4>
-            <div class="step"><span class="num">1</span> Each file is scanned with OCR to extract text and identify quality.</div>
-            <div class="step"><span class="num">2</span> Land identity fields (owner, khasra, area, dates...) are parsed out automatically.</div>
-            <div class="step"><span class="num">3</span> Duplicate & consistency checks run — clean records auto-verify, flagged ones need review.</div>
-            <div class="step"><span class="num">4</span> Everything lands in your <b>Dashboard</b>, ready to double-check.</div>
+            <div class="step"><span class="num">1</span><div class="txt">Each file is scanned with OCR to extract text and identify quality.</div></div>
+            <div class="step"><span class="num">2</span><div class="txt">Land identity fields (owner, khasra, area, dates...) are parsed out automatically.</div></div>
+            <div class="step"><span class="num">3</span><div class="txt">Duplicate & consistency checks run — clean records auto-verify, flagged ones need review.</div></div>
+            <div class="step"><span class="num">4</span><div class="txt">Everything lands in your <b>Dashboard</b>, ready to double-check.</div></div>
           </div>
         </div>
       </section>
@@ -834,12 +875,12 @@
           </div>
           <div class="upload-side-note">
             <h4>⚙️ What happens next</h4>
-            <div class="step"><span class="num">1</span> Your document is OCR-scanned and your land details (owner, khasra, area...) are auto-read.</div>
-            <div class="step"><span class="num">2</span> It's placed in the Revenue Officer's queue with a fixed deadline for physical inspection.</div>
-            <div class="step"><span class="num">3</span> The officer visits / calls to confirm ownership, area, and boundaries in person.</div>
-            <div class="step"><span class="num">4</span> Once confirmed, it's marked <b>Verified</b> with the officer's name — visible to you under <b>My Submissions</b>.</div>
-            <div class="step"><span class="num">5</span> If two people claim the same land, both are held for verification — no submission is fast-tracked over another.</div>
-            <div class="step"><span class="num">6</span> If the deadline is missed, your case is automatically escalated to a senior authority.</div>
+            <div class="step"><span class="num">1</span><div class="txt">Your document is OCR-scanned and your land details (owner, khasra, area...) are auto-read.</div></div>
+            <div class="step"><span class="num">2</span><div class="txt">It's placed in the Revenue Officer's queue with a fixed deadline for physical inspection.</div></div>
+            <div class="step"><span class="num">3</span><div class="txt">The officer visits / calls to confirm ownership, area, and boundaries in person.</div></div>
+            <div class="step"><span class="num">4</span><div class="txt">Once confirmed, it's marked <b>Verified</b> with the officer's name and visible to you under <b>My Submissions</b>.</div></div>
+            <div class="step"><span class="num">5</span><div class="txt">If two people claim the same land, both are held for verification. No submission is fast-tracked over another.</div></div>
+            <div class="step"><span class="num">6</span><div class="txt">If the deadline is missed, your case is automatically escalated to a senior authority.</div></div>
           </div>
         </div>
       </section>
@@ -847,6 +888,7 @@
       <!-- 8. Citizen Portal: My Submissions -->
       <section id="citizen-my-submissions-view" class="tab-panel hidden">
         <div class="panel-header"><div><h2>My Submissions</h2><div class="desc">Track the verification status of every land record you've submitted.</div></div></div>
+        <div id="citizen-tracker-list" class="tracker-list"></div>
         <table id="citizen-submissions-table">
           <thead><tr><th>ID</th><th>Land (Khasra · Village)</th><th>Status</th><th>Deadline</th><th>Verified By</th><th>Notes</th></tr></thead>
           <tbody></tbody>
@@ -884,9 +926,17 @@
           <div class="split-view">
             <!-- Left Panel: Authenticated Soft Copy Viewer -->
             <div>
-              <h4 style="margin:0 0 0.5rem 0;">📄 Original Uploaded Soft Copy</h4>
+              <div class="gis-tabs">
+                <button type="button" class="gis-tab active" id="tab-softcopy" onclick="showLeftPanel('softcopy')">📄 Soft Copy</button>
+                <button type="button" class="gis-tab" id="tab-map" onclick="showLeftPanel('map')">🗺️ Land Map</button>
+              </div>
               <div class="doc-viewer-box" id="doc-preview-area">
                 <span style="color:#94a3b8;">Loading document preview...</span>
+              </div>
+              <div id="gis-map-box" class="hidden">
+                <div id="gis-map"></div>
+                <div id="gis-info"></div>
+                <div id="gis-empty" class="hidden"></div>
               </div>
             </div>
 
@@ -998,6 +1048,8 @@
                     </div>
                   </div>
                 </div>
+
+                <div id="ocr-acc-panel" class="ocr-acc"></div>
 
                 <div style="display:flex; gap:0.6rem; margin-top:1rem;">
                   <button type="button" class="btn" style="background:linear-gradient(135deg, var(--warning), #d97706); flex:1;" onclick="saveRecord('Flagged')">Save as Flagged</button>
@@ -1436,12 +1488,56 @@
       return `<span class="deadline-chip">${d} days left (${rec.verification_deadline})</span>`;
     }
 
+    /* ---------------- Citizen Status Tracker ---------------- */
+    const TRACKER_STEPS = [
+      { label: "Pending", note: "Document received & scanned" },
+      { label: "In Physical Ground Verification", note: "Officer visiting the land" },
+      { label: "Verified by Officer", note: "Added to official registry" }
+    ];
+
+    // Maps a record status to the tracker stage (0-2). Verified = all steps complete (3).
+    function trackerStage(rec) {
+      if (rec.status === "Verified") return 3;
+      if (rec.status === "Awaiting Physical Verification" || rec.status === "Flagged") return 1;
+      return 0; // Pending Verification / anything else
+    }
+
+    function statusTrackerHtml(rec) {
+      const stage = trackerStage(rec);
+      const isAlert = rec.status === "Flagged" || rec.has_conflict;
+      const steps = TRACKER_STEPS.map((st, i) => {
+        const cls = i < stage ? "done" : (i === stage ? "current" + (isAlert ? " alert" : "") : "");
+        const dot = i < stage ? "✓" : (i + 1);
+        return `<div class="tracker-step ${cls}">
+          <div class="tracker-dot">${dot}</div>
+          <div class="tracker-label">${st.label}</div>
+          <div class="tracker-note">${st.note}</div>
+        </div>`;
+      }).join("");
+      let alertHtml = "";
+      if (rec.status === "Flagged") alertHtml = `<div class="tracker-alert">⚠ The officer flagged discrepancies during verification. See notes below.</div>`;
+      else if (rec.has_conflict) alertHtml = `<div class="tracker-alert">⚠ A competing claim exists on this land parcel. The officer will review it during verification.</div>`;
+      return `<div class="tracker-card">
+        <div class="tracker-head">
+          <div>
+            <div class="tracker-title">Record #${rec.id} · Khasra ${escapeHtml(rec.khasra_number || "-")}</div>
+            <div class="tracker-sub">${escapeHtml(rec.village || "-")}${rec.verified_by ? " · Verified by " + escapeHtml(rec.verified_by) : ""}</div>
+          </div>
+          <div>${deadlineChipHtml(rec)}</div>
+        </div>
+        <div class="tracker-steps">${steps}</div>
+        ${alertHtml}
+      </div>`;
+    }
+
     async function loadMySubmissions() {
       const res = await fetch("/api/public/my-submissions", { headers: headers() });
       const tbody = document.querySelector("#citizen-submissions-table tbody");
-      if (!res.ok) { tbody.innerHTML = "<tr><td colspan='6'><div class='empty-state'>Could not load your submissions.</div></td></tr>"; return; }
+      const trackerList = document.getElementById("citizen-tracker-list");
+      if (!res.ok) { trackerList.innerHTML = ""; tbody.innerHTML = "<tr><td colspan='6'><div class='empty-state'>Could not load your submissions.</div></td></tr>"; return; }
       const rows = await res.json();
       tbody.innerHTML = "";
+      trackerList.innerHTML = rows.map(statusTrackerHtml).join("");
       if (!rows.length) {
         tbody.innerHTML = "<tr><td colspan='6'><div class='empty-state'><span class='ic'>🗂️</span>You haven't submitted any land records yet.</div></td></tr>";
         return;
@@ -1544,36 +1640,87 @@
 
     async function submitChecklist(forceFlag) {
       if (!currentChecklistRecordId) return;
+      // Called from an inline onclick, so only treat an explicit `true` as "flag"
+      const flagging = forceFlag === true;
+      const boxes = [...document.querySelectorAll("#checklist-fields input[type='checkbox']")];
+
+      if (!flagging && boxes.some(cb => !cb.checked)) {
+        toast("Tick every field you confirmed on-site before verifying, or use 'Save as Flagged' if something doesn't match.", "warning");
+        return;
+      }
+
       const checks = {};
-      document.querySelectorAll("#checklist-fields input[type='checkbox']").forEach(cb => {
-        checks[cb.dataset.field] = forceFlag ? false : cb.checked;
-      });
+      boxes.forEach(cb => { checks[cb.dataset.field] = flagging ? false : true; });
       const notes = document.getElementById("checklist-notes").value;
 
       const res = await fetch(`/api/officer/verify-checklist/${currentChecklistRecordId}`, {
-        method: "POST", headers: headers(), body: JSON.stringify({ checks, notes })
+        method: "POST", headers: headers(),
+        body: JSON.stringify({
+          checks, notes,
+          action: flagging ? "flag" : "verify",
+          all_confirmed: !flagging,
+          status: flagging ? "Flagged" : "Verified"
+        })
       });
 
       if (res.ok) {
         const data = await res.json();
+        let finalStatus = data.status;
+        let verifiedBy = data.verified_by;
+
+        // The officer ticked every field and pressed "Confirm & Mark Verified", but the
+        // server still answered "Flagged". Apply the Verified status explicitly.
+        if (!flagging && finalStatus !== "Verified") {
+          const rec = publicQueueRecords.find(r => r.id === currentChecklistRecordId) || {};
+          const putRes = await fetch(`/api/records/${currentChecklistRecordId}`, {
+            method: "PUT", headers: headers(),
+            body: JSON.stringify({
+              district: rec.district, tehsil: rec.tehsil, village: rec.village,
+              khasra_number: rec.khasra_number, khata_number: rec.khata_number, plot_number: rec.plot_number,
+              property_id: rec.property_id, owner_name: rec.owner_name, seller_name: rec.seller_name,
+              buyer_name: rec.buyer_name || rec.owner_name, share_hissa: rec.share_hissa,
+              total_area: rec.total_area, land_use: rec.land_use, boundaries_desc: rec.boundaries_desc,
+              consideration_amount: rec.consideration_amount, registration_date: rec.registration_date || null,
+              mutation_date: rec.mutation_date || null, serial_number: rec.serial_number || null,
+              document_type: rec.document_type || "Sale Deed",
+              status: "Verified"
+            })
+          });
+          if (putRes.ok) { finalStatus = "Verified"; verifiedBy = verifiedBy || userFullName || userRole; }
+        }
+
         toast(
-          data.status === "Verified" ? `Record #${currentChecklistRecordId} verified by ${data.verified_by}.` : "Saved as Flagged — discrepancies recorded.",
-          data.status === "Verified" ? "success" : "warning"
+          finalStatus === "Verified" ? `Record #${currentChecklistRecordId} verified by ${verifiedBy}.` : "Saved as Flagged — discrepancies recorded.",
+          finalStatus === "Verified" ? "success" : "warning"
         );
         closeChecklistModal();
         loadPublicQueue();
+        loadRecords();
       } else {
         toast("Could not save verification.", "error");
       }
     }
 
+    // Citizen-submitted records stay visible in the registry/dashboard, but cannot be
+    // verified from there until an officer physically verifies them in "Public Submissions".
+    function isUnverifiedPublic(r) {
+      return r.status !== "Verified" && (
+        r.status === "Awaiting Physical Verification" ||
+        r.source === "public" || r.source === "citizen" ||
+        !!(r.submitter_name || r.submitter_phone)
+      );
+    }
+    const verifyLockedHtml = `<span class="deadline-chip" title="Verify physically from the Public Submissions tab">🔒 Pending physical verification</span>`;
+
     async function loadRecords() {
       const res = await fetch("/api/records", { headers: headers() });
       if (!res.ok) return;
       allRecords = await res.json();
+      snapshotOcrBaselines(allRecords);
 
       const flagged = allRecords.filter(r => r.status === "Flagged");
-      const pending = allRecords.filter(r => r.status === "Pending Verification");
+      // Unverified citizen submissions (not yet physically verified) also count as pending
+      const pending = allRecords.filter(r => r.status === "Pending Verification" || (r.status !== "Flagged" && isUnverifiedPublic(r)));
       const verified = allRecords.filter(r => r.status === "Verified");
 
       animateCount("m-total", allRecords.length);
@@ -1647,7 +1794,7 @@
           <td>#${r.id}</td><td>${r.village || '-'}</td><td>${r.khasra_number || '-'}</td>
           <td>${r.owner_name || '-'}</td>
           <td>${isFlagged ? `<span class="badge-flag">${r.validation_flags.length} Flag(s)</span>` : `<span class="badge-status status-${r.status.toLowerCase().replace(/ /g, '-')}">${r.status}</span>`}</td>
-          <td><button class="btn btn-sm" onclick="openReview(${r.id})">Double-Check</button></td>
+          <td>${isUnverifiedPublic(r) ? verifyLockedHtml : `<button class="btn btn-sm" onclick="openReview(${r.id})">${r.status === "Verified" ? "Double Check" : "Verify"}</button>`}</td>
         `;
         tbody.appendChild(tr);
       });
@@ -1679,17 +1826,496 @@
           <td>#${r.id}</td><td>${r.khasra_number || '-'}</td><td>${r.village || '-'}</td>
           <td>${r.owner_name || '-'}</td><td>${r.total_area != null ? r.total_area : '-'}</td>
           <td><span class="badge-status status-${r.status.toLowerCase().replace(/ /g, '-')}">${r.status}</span></td>
-          <td><button class="btn btn-sm" onclick="openReview(${r.id})">Verify</button></td>
+          <td>${isUnverifiedPublic(r) ? verifyLockedHtml : `<button class="btn btn-sm" onclick="openReview(${r.id})">${r.status === "Verified" ? "Double Check" : "Verify"}</button>`}</td>
         `;
         tbody.appendChild(tr);
       });
     }
+
+    // ---------------- GIS Land Map (boundary-derived plot) ----------------
+    // No hardcoded polygons. For each record the plot is BUILT from:
+    //   1. Anchor  : village/tehsil/district -> lat/lon (geocoded; district centre as last resort)
+    //   2. Size    : Total Area (bigha) -> real m2 -> rectangle dimensions
+    //   3. Chauhaddi: North/South/East/West neighbours parsed from "Boundaries" and drawn on each side
+    // Position is village-level only (a Chauhaddi has no coordinates); shape/size/surroundings are derived.
+    let gisMap = null, gisLayer = null, currentGisRecord = null, gisDrawToken = 0;
+
+    const BIGHA_M2 = 2529.29;                 // Rajasthan pucca bigha = 27,225 sq ft
+    const SIDE_NAME = { N: "North", S: "South", E: "East", W: "West" };
+    const SIDE_OPP = { N: "S", S: "N", E: "W", W: "E" };
+    const DIR_WORDS = { north: "N", south: "S", east: "E", west: "W", "उत्तर": "N", "दक्षिण": "S", "पूर्व": "E", "पश्चिम": "W" };
+    const KIND_STYLE = {
+      road:   { fill: "#94a3b8", name: "Road / path" },
+      water:  { fill: "#7dd3fc", name: "Canal / water" },
+      green:  { fill: "#bbf7d0", name: "Green / common land" },
+      parcel: { fill: "#e2e8f0", name: "Neighbouring plot" },
+      infra:  { fill: "#ddd6fe", name: "Infrastructure" },
+      other:  { fill: "#f1f5f9", name: "Other" }
+    };
+    const DISTRICT_CENTERS = {   // last-resort anchor [lat, lon]
+      jaipur: [26.9124, 75.7873], jodhpur: [26.2389, 73.0243], udaipur: [24.5854, 73.7125],
+      kota: [25.2138, 75.8648], bikaner: [28.0229, 73.3119], ajmer: [26.4499, 74.6399],
+      alwar: [27.5530, 76.6346], bhilwara: [25.3407, 74.6313], sikar: [27.6094, 75.1399],
+      barmer: [25.7463, 71.3926], sriganganagar: [29.9038, 73.8772], ganganagar: [29.9038, 73.8772],
+      pali: [25.7711, 73.3234], chittorgarh: [24.8887, 74.6269], bharatpur: [27.2152, 77.5030],
+      nagaur: [27.2020, 73.7339], jaisalmer: [26.9157, 70.9083], dausa: [26.8947, 76.3375],
+      jhunjhunu: [28.1289, 75.3980]
+    };
+    const geoCache = new Map();
+
+    function normKhasra(v) { return String(v || "").toLowerCase().replace(/\s+/g, ""); }
+    function alphaKey(v) { return String(v || "").toLowerCase().replace(/[^a-z]/g, ""); }
+
+    // ---- Area -> m2 ----
+    // total_area is usually just a number, but dossier deeds quote bigha, sq. yd, sq. m or hectares.
+    // Text ("2 Bigha 10 Biswa", "250 Sq. Yards") is parsed exactly; a bare number uses the unit picked
+    // in the map panel (default: bigha, or sq. m when the value is too big to be bigha).
+    const SQYD_M2 = 0.836127, SQFT_M2 = 0.092903;
+    const gisUnitOverride = {};
+    function areaToM2(rec) {
+      const raw = rec.total_area;
+      if (typeof raw === "string" && /[a-z]/i.test(raw)) {
+        const s = raw.replace(/,/g, "");
+        const m = s.match(/(\d+(?:\.\d+)?)\s*(bigha|sq\.?\s*y\w*|sq\.?\s*m\w*|sq\.?\s*f\w*|hectare|ha)\b/i);
+        if (m) {
+          const v = parseFloat(m[1]), u = m[2].toLowerCase().replace(/[\s.]/g, "");
+          let m2;
+          if (u === "bigha") { const b = s.match(/bigha\s*(\d+(?:\.\d+)?)\s*biswa/i); m2 = (v + (b ? parseFloat(b[1]) / 20 : 0)) * BIGHA_M2; }
+          else if (u.startsWith("sqy")) m2 = v * SQYD_M2;
+          else if (u.startsWith("sqm")) m2 = v;
+          else if (u.startsWith("sqf")) m2 = v * SQFT_M2;
+          else m2 = v * 10000;
+          return { m2, unit: "text", assumed: false };
+        }
+      }
+      const n = parseFloat(raw);
+      if (!(n > 0)) return null;
+      const assumed = !gisUnitOverride[rec.id] && n > 100;
+      const unit = gisUnitOverride[rec.id] || (n > 100 ? "sqm" : "bigha");
+      const f = { bigha: BIGHA_M2, sqm: 1, sqyd: SQYD_M2, ha: 10000 }[unit];
+      return { m2: n * f, unit, assumed };
+    }
+    function setGisUnit(u) {
+      if (!currentGisRecord) return;
+      gisUnitOverride[currentGisRecord.id] = u;
+      drawParcel();
+    }
+    function unitPicker(au) {
+      if (au.unit === "text") return "";
+      const opt = (v, l) => `<option value="${v}"${au.unit === v ? " selected" : ""}>${l}</option>`;
+      return `<br>Area unit: <select onchange="setGisUnit(this.value)" style="font-size:0.75rem;">${opt("bigha", "Bigha")}${opt("sqm", "Sq. m")}${opt("sqyd", "Sq. yd")}${opt("ha", "Hectare")}</select>${au.assumed ? " <i>(assumed - check)</i>" : ""}`;
+    }
+
+    // Green = verified, red = flagged / competing claim / boundary mismatch, amber = still pending
+    function gisColor(rec, hasIssues) {
+      if (rec.status === "Flagged" || rec.has_conflict || hasIssues) return "#ef4444";
+      if (rec.status === "Verified") return "#10b981";
+      return "#f59e0b";
+    }
+    function gisLabel(rec, hasIssues) {
+      if (rec.status === "Flagged" || rec.has_conflict) return "Fraud dispute";
+      if (hasIssues) return "Boundary mismatch";
+      if (rec.status === "Verified") return "Verified";
+      return "Pending verification";
+    }
+
+    // ---- Chauhaddi parsing ----
+    function classifyNeighbor(text) {
+      const t = text.toLowerCase();
+      const refM = text.match(/(?:khasra|killa|murabba|plot(?:\s*no\.?)?)\s*[:#]?\s*([A-Za-z]{0,3}-?\d[\w\-\/]*)/i);
+      const ref = refM ? refM[1] : null;
+      let kind;
+      if (/road|highway|expressway|\bnh-?\d|\bsh-?\d|lane|marg|path|track|rasta|रास्ता/.test(t)) kind = "road";
+      else if (/canal|nala|nalla|stream|river|watercourse|khala|johad|drain|channel|baori|stepwell|well|catchment|flood|नहर|नाला/.test(t)) kind = "water";
+      else if (/green|park|garden|forest|pasture|gochar|grazing|buffer|open space|गोचर/.test(t)) kind = "green";
+      else if (ref) kind = "parcel";
+      else if (/railway|sub-?station|wall|corridor|quarry|unit|storage|transmission/.test(t)) kind = "infra";
+      else kind = "other";
+      const wM = text.match(/(\d+(?:\.\d+)?)\s*(ft|feet|foot|meters?|metres?|m)\b/i);
+      let widthM = null;
+      if (wM) {
+        widthM = parseFloat(wM[1]) * (/^(ft|feet|foot)$/i.test(wM[2]) ? 0.3048 : 1);
+        widthM = Math.max(3, Math.min(40, widthM));
+      }
+      return { text: text.trim(), kind, ref, widthM };
+    }
+
+    function parseBoundaries(text) {
+      const out = {};
+      if (!text) return out;
+      text = String(text).replace(/\s*Page\s*\d+\s*$/i, "");   // stray PDF page footer
+      const re = /(?:^|[|;,\s])(north|south|east|west|उत्तर|दक्षिण|पूर्व|पश्चिम)\s*(?:\([^)]*\))?\s*[:\-–]\s*([^|;\n]+)/gi;
+      let m;
+      while ((m = re.exec(text)) !== null) {
+        const side = DIR_WORDS[m[1].toLowerCase()];
+        if (side && !out[side] && m[2].trim()) out[side] = classifyNeighbor(m[2]);
+      }
+      return out;
+    }
+
+    // "845" is the parent of "845/1"; siblings ("845/1" vs "845/2") do NOT match
+    function refMatch(a, b) {
+      const x = normKhasra(a), y = normKhasra(b);
+      if (!x || !y) return false;
+      return x === y || x.startsWith(y + "/") || y.startsWith(x + "/");
+    }
+
+    function findNeighborRecord(rec, ref) {
+      if (!ref) return null;
+      const vill = normKhasra(rec.village);
+      return (typeof allRecords !== "undefined" ? allRecords : [])
+        .find(r => r.id !== rec.id && normKhasra(r.village) === vill && refMatch(r.khasra_number, ref)) || null;
+    }
+
+    // Reciprocity check: if A says "East = B", then B must say "West = A"
+    function boundaryIssues(rec, sides) {
+      const issues = [];
+      for (const s of ["N", "S", "E", "W"]) {
+        const n = sides[s];
+        if (!n || !n.ref) continue;
+        if (refMatch(rec.khasra_number, n.ref)) {
+          issues.push(`${SIDE_NAME[s]} neighbour is the plot itself (Khasra ${n.ref})`);
+          continue;
+        }
+        const nb = findNeighborRecord(rec, n.ref);
+        if (!nb) continue;
+        const back = parseBoundaries(nb.boundaries_desc)[SIDE_OPP[s]];
+        if (back && back.ref && !refMatch(back.ref, rec.khasra_number)) {
+          issues.push(`Khasra ${n.ref} (record #${nb.id}) lists Khasra ${back.ref} on its ${SIDE_NAME[SIDE_OPP[s]]}, not ${rec.khasra_number}`);
+        }
+      }
+      return issues;
+    }
+
+    // ---- Anchor (where on Earth) ----
+    function inRajasthan(p) { return p && p[0] > 23.0 && p[0] < 30.3 && p[1] > 69.4 && p[1] < 78.4; }
+
+    async function geocodePlace(q) {
+      if (geoCache.has(q)) return geoCache.get(q);
+      try {
+        const r = await fetch("https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&countrycodes=in&q=" + encodeURIComponent(q));
+        const j = await r.json();
+        const hit = j && j[0] ? [parseFloat(j[0].lat), parseFloat(j[0].lon)] : null;
+        geoCache.set(q, hit);
+        return hit;
+      } catch (e) { return null; }   // network failure: don't cache
+    }
+
+    async function locateAnchor(rec) {
+      const tries = [
+        ["village", [rec.village, rec.tehsil, rec.district]],
+        ["tehsil", [rec.tehsil, rec.district]]
+      ];
+      for (const [level, parts] of tries) {
+        const named = parts.filter(Boolean);
+        if (level === "village" && !rec.village) continue;
+        if (level === "tehsil" && !rec.tehsil) continue;
+        const hit = await geocodePlace(named.join(", ") + ", Rajasthan, India");
+        if (hit && inRajasthan(hit)) return { pt: hit, level };
+      }
+      const d = DISTRICT_CENTERS[alphaKey(rec.district)];
+      return d ? { pt: d, level: "district" } : null;
+    }
+
+    // ---- Geometry: local metres (x = east, y = north) -> lat/lon ----
+    function makeProjector(lat0, lon0) {
+      const mLat = 111320, mLon = 111320 * Math.cos(lat0 * Math.PI / 180);
+      return (x, y) => [lat0 + y / mLat, lon0 + x / mLon];
+    }
+    function rectLL(toLL, x1, y1, x2, y2) {
+      return [toLL(x1, y1), toLL(x2, y1), toLL(x2, y2), toLL(x1, y2)];
+    }
+
+    // While the review form is open, the map uses what is on screen (typed corrections included)
+    function gisLiveRecord() {
+      const base = currentGisRecord;
+      if (!base) return null;
+      const modal = document.getElementById("review-modal");
+      if (!modal || modal.classList.contains("hidden")) return base;
+      const v = id => { const el = document.getElementById(id); return el ? el.value.trim() : ""; };
+      return { ...base, district: v("edit-district"), tehsil: v("edit-tehsil"), village: v("edit-village"),
+        khasra_number: v("edit-khasra"), total_area: v("edit-area"), boundaries_desc: v("edit-boundaries") };
+    }
+
+    function showLeftPanel(which) {
+      const isMap = which === "map";
+      document.getElementById("doc-preview-area").classList.toggle("hidden", isMap);
+      document.getElementById("gis-map-box").classList.toggle("hidden", !isMap);
+      document.getElementById("tab-softcopy").classList.toggle("active", !isMap);
+      document.getElementById("tab-map").classList.toggle("active", isMap);
+      if (isMap) drawParcel();
+    }
+
+    function shortText(s, n) { return s.length > n ? s.slice(0, n - 1) + "…" : s; }
+
+    async function drawParcel() {
+      const rec = gisLiveRecord();
+      if (!rec) return;
+      const empty = document.getElementById("gis-empty");
+      const info = document.getElementById("gis-info");
+      if (typeof L === "undefined") {
+        empty.innerHTML = "Map library could not load. Check your internet connection.";
+        empty.classList.remove("hidden");
+        return;
+      }
+      if (!gisMap) {
+        gisMap = L.map("gis-map").setView([26.9, 74.0], 6);
+        L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+          maxZoom: 19, attribution: "&copy; OpenStreetMap contributors"
+        }).addTo(gisMap);
+      }
+      gisMap.invalidateSize();
+      if (gisLayer) { gisMap.removeLayer(gisLayer); gisLayer = null; }
+      const token = ++gisDrawToken;
+
+      const au = areaToM2(rec);
+      if (!au) {
+        empty.innerHTML = `No Total Area on this record${rec.khasra_number ? ` (Khasra <b>${escapeHtml(rec.khasra_number)}</b>)` : ""}.<br>Type it into <b>Total Area</b> in the form - the map redraws as you type.`;
+        empty.classList.remove("hidden");
+        info.classList.add("hidden");
+        return;
+      }
+      empty.classList.add("hidden");
+      info.classList.remove("hidden");
+      info.innerHTML = "📍 Locating village...";
+
+      const anchor = await locateAnchor(rec);
+      if (token !== gisDrawToken) return;   // user switched record meanwhile
+      if (!anchor) {
+        empty.innerHTML = `Could not locate <b>${escapeHtml(rec.village || "-")}</b>, ${escapeHtml(rec.district || "-")}. Check the Village / District fields.`;
+        empty.classList.remove("hidden");
+        info.classList.add("hidden");
+        return;
+      }
+
+      // Plot rectangle from real area (aspect ratio 1.3 : 1, E-W longer)
+      const areaM2 = au.m2;
+      if (Math.sqrt(areaM2) > 2500) {   // almost certainly the wrong unit
+        empty.classList.add("hidden");
+        info.classList.remove("hidden");
+        info.innerHTML = `<b>Khasra ${escapeHtml(rec.khasra_number || "-")}</b><br><span style="color:#ef4444;">⚠ Plot would be ~${(Math.sqrt(areaM2) / 1000).toFixed(1)} km wide - the area unit is probably wrong.</span>${unitPicker(au)}`;
+        return;
+      }
+      const w = Math.sqrt(areaM2 * 1.3), h = areaM2 / w;
+      const toLL = makeProjector(anchor.pt[0], anchor.pt[1]);
+
+      const sides = parseBoundaries(rec.boundaries_desc);
+      const issues = boundaryIssues(rec, sides);
+      const color = gisColor(rec, issues.length > 0);
+      const group = L.featureGroup();
+
+      // Neighbours: one strip/block per side, sharing the plot's edge
+      for (const s of ["N", "S", "E", "W"]) {
+        const n = sides[s];
+        if (!n) continue;
+        const nbRec = n.ref ? findNeighborRecord(rec, n.ref) : null;
+        const edge = (s === "N" || s === "S") ? w : h;
+        let t;
+        if (n.kind === "parcel" || (n.ref && !n.widthM && n.kind === "other")) {
+          const nbAu = nbRec ? areaToM2(nbRec) : null;
+          const nbArea = nbAu ? nbAu.m2 : NaN;
+          t = nbArea > 0 ? nbArea / edge : 30;
+          t = Math.max(15, Math.min(60, t));
+        } else {
+          t = n.widthM || { road: 8, water: 5, green: 10, infra: 12, other: 8 }[n.kind] || 8;
+        }
+        let pts;
+        if (s === "N") pts = rectLL(toLL, -w / 2, h / 2, w / 2, h / 2 + t);
+        else if (s === "S") pts = rectLL(toLL, -w / 2, -h / 2 - t, w / 2, -h / 2);
+        else if (s === "E") pts = rectLL(toLL, w / 2, -h / 2, w / 2 + t, h / 2);
+        else pts = rectLL(toLL, -w / 2 - t, -h / 2, -w / 2, h / 2);
+
+        const st = KIND_STYLE[n.kind] || KIND_STYLE.other;
+        const nbColor = nbRec ? gisColor(nbRec, false) : null;
+        const poly = L.polygon(pts, {
+          color: nbColor || "#64748b", weight: nbRec ? 2 : 1, dashArray: nbRec ? null : "4 3",
+          fillColor: nbColor || st.fill, fillOpacity: nbRec ? 0.25 : 0.7
+        });
+        const popup = `<b>${SIDE_NAME[s]}</b>: ${escapeHtml(n.text)}<br><i>${st.name}${n.widthM ? " · ~" + Math.round(n.widthM) + " m wide" : ""}</i>`
+          + (nbRec ? `<br>In registry: record #${nbRec.id} · ${escapeHtml(nbRec.owner_name || "-")} · ${escapeHtml(nbRec.status || "")}` : "");
+        poly.bindPopup(popup);
+        poly.bindTooltip(`${s}: ${escapeHtml(shortText(n.text, 26))}`, { permanent: true, direction: "center", className: "gis-tip" });
+        poly.addTo(group);
+      }
+
+      const plot = L.polygon(rectLL(toLL, -w / 2, -h / 2, w / 2, h / 2),
+        { color, fillColor: color, fillOpacity: 0.45, weight: 3 });
+      plot.bindTooltip(`Khasra ${escapeHtml(rec.khasra_number || "-")}`, { permanent: true, direction: "center", className: "gis-tip" });
+      plot.addTo(group);
+
+      gisLayer = group.addTo(gisMap);
+      gisMap.fitBounds(group.getBounds(), { padding: [50, 50], maxZoom: 18 });
+
+      const anchorTxt = { village: "village-level (geocoded)", tehsil: "tehsil-level (village not found)", district: "district-level (approximate)" }[anchor.level];
+      const missing = ["N", "S", "E", "W"].filter(s => !sides[s]);
+      info.innerHTML = `<b>Khasra ${escapeHtml(rec.khasra_number || "-")}</b> · ${escapeHtml(rec.village || "-")}<br>
+        <span style="color:${color}; font-weight:700;">● ${gisLabel(rec, issues.length > 0)}</span><br>
+        Plot ≈ ${Math.round(areaM2).toLocaleString()} m² · ~${Math.round(w)} × ${Math.round(h)} m${unitPicker(au)}<br>
+        📍 Position: ${anchorTxt}
+        ${missing.length === 4 ? "<br>⚠ No Chauhaddi found in Boundaries - plot only." : (missing.length ? "<br>Not stated: " + missing.map(s => SIDE_NAME[s]).join(", ") : "")}
+        ${issues.map(i => `<br><span style="color:#ef4444;">⚠ ${escapeHtml(i)}</span>`).join("")}`;
+    }
+
+    // ---------------- OCR Accuracy Calculator ----------------
+    // Measures how much of the data in the deed OCR was actually able to extract.
+    //   baseline = what OCR originally returned (captured the first time a record is opened)
+    //   current  = what the officer finally submits (the complete data of the deed)
+    //   Extraction rate = fields OCR returned a value for / fields that hold data
+    // A field the OCR left empty (and the officer had to type in) counts as NOT extracted.
+    // A field that is empty both in OCR and in the final form has no data, so it is ignored.
+    const OCR_FIELDS = [
+      ["edit-district", "District"], ["edit-tehsil", "Tehsil"], ["edit-village", "Village"],
+      ["edit-khasra", "Khasra No."], ["edit-khata", "Khata No."], ["edit-plot", "Plot No."],
+      ["edit-property-id", "Property ID"], ["edit-owner", "Owner"], ["edit-seller", "Seller"],
+      ["edit-share", "Share / Hissa"], ["edit-area", "Total Area"], ["edit-land-use", "Land Use"],
+      ["edit-consideration", "Consideration"], ["edit-boundaries", "Boundaries"],
+      ["edit-reg-date", "Registration Date"], ["edit-mut-date", "Mutation Date"], ["edit-serial", "Serial / Deed No."]
+    ];
+    const OCR_NUMERIC = ["edit-area", "edit-consideration"];
+    let ocrBaseline = null;
+
+    function ocrNorm(id, v) {
+      let s = String(v == null ? "" : v).trim().replace(/\s+/g, " ");
+      if (OCR_NUMERIC.includes(id) && s !== "" && !isNaN(parseFloat(s))) s = String(parseFloat(s));
+      return s;
+    }
+
+    function levenshtein(a, b) {
+      if (a === b) return 0;
+      if (!a.length) return b.length;
+      if (!b.length) return a.length;
+      let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+      for (let i = 1; i <= a.length; i++) {
+        const cur = [i];
+        for (let j = 1; j <= b.length; j++) {
+          cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+        }
+        prev = cur;
+      }
+      return prev[b.length];
+    }
+
+    // baseline / current: { inputId: value }
+    function computeOcrAccuracy(baseline, current) {
+      let total = 0, extracted = 0;
+      const missed = [];
+      for (const [id, label] of OCR_FIELDS) {
+        const a = ocrNorm(id, baseline[id]), b = ocrNorm(id, current[id]);
+        if (a === "" && b === "") continue;          // no data in this field at all
+        total++;
+        if (a !== "") extracted++;                   // OCR returned something for it
+        else missed.push({ label, to: b });          // OCR found nothing, officer filled it in
+      }
+      return { total, extracted, missed, rate: total ? extracted / total : null };
+    }
+
+    function readReviewForm() {
+      const o = {};
+      OCR_FIELDS.forEach(([id]) => { o[id] = document.getElementById(id).value; });
+      return o;
+    }
+
+    function ocrStore(key, val) { try { localStorage.setItem(key, JSON.stringify(val)); } catch (e) {} }
+    function ocrLoad(key) { try { return JSON.parse(localStorage.getItem(key)); } catch (e) { return null; } }
+
+    // Maps form inputs to record keys, so the OCR output can be snapshotted straight from the API data
+    const OCR_REC_KEYS = {
+      "edit-district": "district", "edit-tehsil": "tehsil", "edit-village": "village",
+      "edit-khasra": "khasra_number", "edit-khata": "khata_number", "edit-plot": "plot_number",
+      "edit-property-id": "property_id", "edit-owner": "owner_name", "edit-seller": "seller_name",
+      "edit-share": "share_hissa", "edit-area": "total_area", "edit-land-use": "land_use",
+      "edit-consideration": "consideration_amount", "edit-boundaries": "boundaries_desc",
+      "edit-reg-date": "registration_date", "edit-mut-date": "mutation_date", "edit-serial": "serial_number"
+    };
+    // Every record that is NOT yet verified gets its raw OCR values saved the first time it is listed
+    function snapshotOcrBaselines(records) {
+      (records || []).forEach(rec => {
+        if (rec.status === "Verified") return;
+        const key = "bv_ocr_base_" + rec.id;
+        if (ocrLoad(key)) return;
+        const snap = {};
+        for (const [id, k] of Object.entries(OCR_REC_KEYS)) {
+          let v = rec[k];
+          if ((id === "edit-reg-date" || id === "edit-mut-date") && typeof v === "string") v = v.slice(0, 10);
+          snap[id] = v == null ? "" : v;
+        }
+        ocrStore(key, snap);
+      });
+    }
+
+    // Call right after the form is filled from the record
+    function initOcrBaseline(rec) {
+      const key = "bv_ocr_base_" + rec.id;
+      let base = ocrLoad(key);
+      if (!base && rec.status !== "Verified") {      // first look at fresh OCR output
+        base = readReviewForm();
+        ocrStore(key, base);
+      }
+      ocrBaseline = base;                            // null = already verified, original OCR unknown
+      updateOcrPanel();
+    }
+
+    function ocrOverall() {
+      const hist = ocrLoad("bv_ocr_history_v2") || {};
+      const rows = Object.values(hist);
+      if (!rows.length) return null;
+      const t = rows.reduce((s, r) => s + r.total, 0), e = rows.reduce((s, r) => s + r.extracted, 0);
+      return { records: rows.length, rate: t ? e / t : null, extracted: e, total: t };
+    }
+
+    function pct(x) { return x == null ? "-" : (x * 100).toFixed(1) + "%"; }
+    function accColor(x) { return x == null ? "#94a3b8" : x >= 0.95 ? "#10b981" : x >= 0.85 ? "#f59e0b" : "#ef4444"; }
+
+    function updateOcrPanel() {
+      const el = document.getElementById("ocr-acc-panel");
+      if (!el) return;
+      const overall = ocrOverall();
+      const overallHtml = overall
+        ? `<div class="ocr-acc-overall">Overall across ${overall.records} reviewed record${overall.records > 1 ? "s" : ""}: <b>${pct(overall.rate)}</b> of data extracted (${overall.extracted}/${overall.total} fields)</div>` : "";
+      if (!ocrBaseline) {
+        el.innerHTML = `<div class="ocr-acc-title">🎯 OCR Accuracy</div>
+          <div class="ocr-acc-note">No original OCR snapshot for this record - it was already verified before tracking began. Upload a new deed to see how much data OCR extracts.</div>${overallHtml}`;
+        return;
+      }
+      const r = computeOcrAccuracy(ocrBaseline, readReviewForm());
+      const col = accColor(r.rate);
+      const missed = r.missed.slice(0, 6).map(c =>
+        `<div class="ocr-acc-change"><b>${escapeHtml(c.label)}</b>: not extracted by OCR${c.to ? " → " + escapeHtml(shortText(c.to, 28)) : ""}</div>`).join("");
+      el.innerHTML = `<div class="ocr-acc-title">🎯 OCR Accuracy <span style="color:${col};">${pct(r.rate)}</span>
+          <span class="ocr-acc-sub">${r.extracted}/${r.total} fields extracted from the deed</span></div>
+        <div class="ocr-acc-bar"><div style="width:${r.rate == null ? 0 : r.rate * 100}%; background:${col};"></div></div>
+        ${missed || '<div class="ocr-acc-note">OCR extracted every field that holds data.</div>'}
+        ${r.missed.length > 6 ? `<div class="ocr-acc-note">+ ${r.missed.length - 6} more fields not extracted</div>` : ""}
+        ${overallHtml}`;
+    }
+
+    // Called after a successful save: logs this record's final accuracy
+    function recordOcrAccuracy(id) {
+      if (!ocrBaseline) return;
+      const r = computeOcrAccuracy(ocrBaseline, readReviewForm());
+      const hist = ocrLoad("bv_ocr_history_v2") || {};
+      hist[id] = { total: r.total, extracted: r.extracted, ts: Date.now() };
+      ocrStore("bv_ocr_history_v2", hist);
+    }
+
+    let gisRedrawTimer = null;
+    document.addEventListener("input", e => {
+      if (!(e.target.closest && e.target.closest("#review-modal"))) return;
+      updateOcrPanel();
+      if (["edit-district", "edit-tehsil", "edit-village", "edit-khasra", "edit-area", "edit-boundaries"].includes(e.target.id)
+          && !document.getElementById("gis-map-box").classList.contains("hidden")) {
+        clearTimeout(gisRedrawTimer);
+        gisRedrawTimer = setTimeout(drawParcel, 700);
+      }
+    });
 
     async function openReview(id) {
       const rec = allRecords.find(r => r.id === id);
       if (!rec) return;
 
       document.getElementById("edit-id").value = rec.id;
+      currentGisRecord = rec;
+      showLeftPanel("softcopy");
 
       // 1. Location
       setupField("edit-district", "ci-district", rec.district, rec.confidence_scores?.district || 0.96);
@@ -1717,6 +2343,7 @@
       setupField("edit-reg-date", "ci-reg-date", rec.registration_date, rec.confidence_scores?.registration_date || 0.96);
       setupField("edit-mut-date", "ci-mut-date", rec.mutation_date, rec.confidence_scores?.mutation_date || 0.85);
       setupField("edit-serial", "ci-serial", rec.serial_number, rec.confidence_scores?.serial_number || 0.95);
+      initOcrBaseline(rec);
 
       // Authenticated Soft-Copy Viewer (Loads PDFs & Images as Blob URLs)
       const previewArea = document.getElementById("doc-preview-area");
@@ -1802,6 +2429,7 @@
 
       const res = await fetch(`/api/records/${id}`, { method: "PUT", headers: headers(), body: JSON.stringify(payload) });
       if (res.ok) {
+        recordOcrAccuracy(id);
         toast(`Record status updated to: ${targetStatus}`, targetStatus === "Verified" ? "success" : "warning");
         closeModal();
         loadRecords();
