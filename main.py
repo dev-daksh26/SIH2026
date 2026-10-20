@@ -2,6 +2,9 @@ import os
 import re
 import io
 import json
+import base64
+import urllib.request
+import urllib.error
 import threading
 import traceback
 import sqlite3
@@ -9,7 +12,7 @@ import hashlib
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any, Tuple
 
-# CRITICAL FOR WINDOWS + PADDLE 3.x: disable oneDNN / PIR C++ crash before importing paddle
+# CRITICAL FOR WINDOWS + PADDLE 3.x: prevent oneDNN / PIR C++ crash before importing paddle
 os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
 os.environ.setdefault("FLAGS_use_mkldnn", "0")
 os.environ.setdefault("FLAGS_enable_pir_api", "0")
@@ -34,7 +37,7 @@ try:
 except ImportError:
     Image = None
 
-# ----------------- OCR engine selection -----------------
+# ----------------- OCR & AI Normalizer Configuration -----------------
 OCR_ENGINE = os.getenv("OCR_ENGINE", "paddle").strip().lower()
 if OCR_ENGINE not in ("paddle", "tesseract"):
     print(f"[OCR] Unknown OCR_ENGINE '{OCR_ENGINE}' - using 'paddle'")
@@ -43,9 +46,12 @@ if OCR_ENGINE not in ("paddle", "tesseract"):
 PADDLE_LANG = os.getenv("PADDLE_OCR_LANG", "en")
 TESSERACT_LANG = os.getenv("TESSERACT_LANG", "eng")
 PADDLE_DOC_ORIENTATION = os.getenv("PADDLE_DOC_ORIENTATION", "0") == "1"
-# Keep MKLDNN False on Windows to avoid NotImplementedError in onednn_instruction.cc
 PADDLE_ENABLE_MKLDNN = os.getenv("PADDLE_ENABLE_MKLDNN", "0") == "1"
 MAX_OCR_PAGES = int(os.getenv("MAX_OCR_PAGES", "6"))
+
+# Optional API keys for Tier-1 Vision/LLM Canonical Normalizer (falls back to Tier-2 Offline Normalizer automatically)
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 
 OCR_AVAILABLE = False
 OCR_INIT_ERROR = None
@@ -72,7 +78,11 @@ else:
     except Exception as e:
         OCR_INIT_ERROR = e
 
-print(f"[OCR] engine={OCR_ENGINE}  available={OCR_AVAILABLE}" + (f"  error={OCR_INIT_ERROR!r}" if OCR_INIT_ERROR else ""))
+print(
+    f"[OCR] engine={OCR_ENGINE}  available={OCR_AVAILABLE}  "
+    f"normalizer={'Gemini-Vision' if GEMINI_API_KEY else ('Groq-LLM' if GROQ_API_KEY else 'Local-2D-Canonical')}"
+    + (f"  error={OCR_INIT_ERROR!r}" if OCR_INIT_ERROR else "")
+)
 
 try:
     from PyPDF2 import PdfReader
@@ -292,7 +302,7 @@ _paddle_engine = None
 _paddle_lock = threading.Lock()
 
 def _get_paddle_engine():
-    """Create the PaddleOCR model once with enable_mkldnn=False (safe on Windows Paddle 3.x)."""
+    """Singleton PaddleOCR with enable_mkldnn=False (prevents Windows Paddle 3.x oneDNN C++ crash)."""
     global _paddle_engine
     if _paddle_engine is None:
         with _paddle_lock:
@@ -364,11 +374,10 @@ def _paddle_items(results):
 
 def _assemble_lines(items) -> str:
     """
-    Reconstructs text in TWO ways so both single-column deeds (Timeline2.pdf) and
-    3-column boxed records (Testing_realdata1.pdf) parse accurately:
-    1) Row-by-row reading order (with ' | ' between horizontal columns).
-    2) Vertical Column Cell Pairing: links each box with the value box directly below it
-       in the same column as 'HEADER : VALUE'.
+    2D Spatial Layout Assembler:
+    1) Builds standard horizontal rows.
+    2) Pairs each header box with the value box directly below it in the same column
+       so 3-column grid PDFs (Testing_realdata1.pdf) become clean 'HEADER : VALUE' lines.
     """
     items = [it for it in items if it[4] and it[4].strip()]
     if not items:
@@ -484,106 +493,108 @@ def _log_ocr_error(where: str):
     print(f"[OCR] {OCR_ENGINE} failed during {where}:")
     traceback.print_exc()
 
-def run_ocr(file_content: bytes, filename: str) -> Tuple[str, float]:
-    file_hash = hashlib.sha256(file_content).hexdigest()
-    if file_hash in _OCR_CACHE and _OCR_CACHE[file_hash][0]:
-        return _OCR_CACHE[file_hash]
+# ----------------- STAGE 1: Universal Canonical Format Normalizer -----------------
+# Converts ANY document format (3-column tables, handwritten deeds, narrative paragraphs)
+# into the exact `Timeline2.pdf` canonical format BEFORE extraction!
 
-    ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
-    text = ""
-    quality = 0.90
+_CANONICAL_PROMPT = """You are a strict Land Record Canonical Format Converter for Rajasthan Revenue Records.
+Convert the provided land record into this EXACT single-column key-value template (same format as Timeline2.pdf).
+Rules:
+- Output ONLY the key-value lines below. Do NOT include markdown code fences or explanations.
+- Strip all Hindi/Devanagari script in parentheses like (जोधपुर) or (खसरा संख्या).
+- Strip honorifics like Shri, Smt, Late, Mr, Mrs, and strip genealogical suffixes (S/O, D/O, W/O, R/O, Aged) from names.
+- Keep company names intact (e.g. Marwar Logistics & Warehousing LLP).
+- For Village, output ONLY the village/sector name (e.g. Chomu, Amer, Pal Road Commercial Strip, Mansarovar Sector 4) — never include '1. Location', '/ Urban Locality:', or 'Vendee/Vendor'.
+- For Khasra No and Khata No, strip words like 'Commercial Khata' or '(JDA Scheme)' so only the identifier remains (e.g. 104, 19, 402/1, KH-12).
+- Convert dates to DD-MM-YYYY format.
+- For Total Area, output a single number (prefer Bigha or Sq. Yards or Ha).
+- For Consideration, output only digits (e.g. 28500000 or 0).
 
-    if ext == "txt":
-        res = (file_content.decode("utf-8", errors="ignore").strip(), 1.0)
-        _OCR_CACHE[file_hash] = res
-        return res
+Exact Template:
+DOCUMENT TYPE: <Sale Deed | Succession / Mutation | Khasra-Khatauni Record | Record of Rights (RoR) | Patta / Lease>
+SERIAL NO: <deed/serial/stamp number>
+District: <district name>
+Tehsil: <tehsil name>
+Village: <village or locality name>
+Khasra No: <khasra number>
+Khata No: <khata number>
+Plot No: <plot number>
+Property ID: <UPID/ULPIN/Property ID>
+Vendor: <seller / prior transferor name>
+Recorded Holder: <buyer / recorded owner name>
+Share / Hissa: <share e.g. 1/1 (Full)>
+Total Area: <numeric area>
+Land Use: <Agricultural | Commercial (Converted) | Residential>
+Consideration: <numeric amount in Rs>
+Registration Date: <DD-MM-YYYY>
+Mutation Date: <DD-MM-YYYY>
+Boundaries: North: <north> | South: <south> | East: <east> | West: <west>
+"""
 
-    if ext in ("png", "jpg", "jpeg", "bmp", "tiff", "tif", "webp"):
-        if OCR_AVAILABLE:
-            try:
-                text, conf = _ocr_image_bytes(file_content)
-                if len(text.strip()) < 50:
-                    quality = 0.55
-                elif conf is not None:
-                    quality = round(min(0.99, conf), 2)
-                else:
-                    quality = 0.90
-            except Exception:
-                _log_ocr_error("image upload")
-                text = ""
-                quality = 0.0
-        else:
-            quality = 0.0
-
-    elif ext == "pdf":
-        page_pngs = []
-        if FITZ_AVAILABLE:
-            try:
-                doc = fitz.open(stream=file_content, filetype="pdf")
-                text = _extract_pdf_structured_text(doc)
-                if len(text.strip()) < 60 and OCR_AVAILABLE:
-                    dpi = 150 if OCR_ENGINE == "paddle" else 220
-                    for idx in range(min(len(doc), MAX_OCR_PAGES)):
-                        page_pngs.append(doc[idx].get_pixmap(dpi=dpi).tobytes("png"))
-                doc.close()
-            except Exception:
-                _log_ocr_error("PyMuPDF read")
-
-        if len(text.strip()) < 60 and PDF_TEXT_AVAILABLE and not page_pngs:
-            try:
-                reader = PdfReader(io.BytesIO(file_content))
-                text = "\n".join((page.extract_text() or "") for page in reader.pages[:MAX_OCR_PAGES])
-            except Exception:
-                text = ""
-
-        if len(text.strip()) < 60 and not page_pngs and PDF2IMAGE_AVAILABLE and OCR_AVAILABLE:
-            try:
-                dpi = 150 if OCR_ENGINE == "paddle" else 220
-                for page_img in convert_from_bytes(file_content, dpi=dpi, last_page=MAX_OCR_PAGES):
-                    buf = io.BytesIO()
-                    page_img.save(buf, format="PNG")
-                    page_pngs.append(buf.getvalue())
-            except Exception:
-                _log_ocr_error("pdf2image render")
-
-        if page_pngs and OCR_AVAILABLE:
-            ocr_parts = []
-            confs = []
-            for png in page_pngs:
-                try:
-                    p_txt, p_conf = _ocr_image_bytes(png, retry_sparse=False)
-                    if p_txt.strip():
-                        ocr_parts.append(p_txt.strip())
-                    if p_conf is not None:
-                        confs.append(p_conf)
-                except Exception:
-                    _log_ocr_error("scanned-PDF page OCR")
-            ocr_text = "\n".join(ocr_parts).strip()
-            if len(ocr_text) > len(text.strip()):
-                text = ocr_text
-                quality = round(min(0.96, sum(confs) / len(confs)), 2) if confs else 0.82
-        elif text.strip():
-            quality = 0.96
-        else:
-            quality = 0.0
-
-    res = (text.strip(), quality)
-    if res[0]:
-        _OCR_CACHE[file_hash] = res
-    return res
-
-def _warm_up_paddle():
+def _call_gemini_normalizer(raw_text: str, image_png_bytes: Optional[bytes] = None) -> Optional[str]:
+    """Tier-1A: Fast Gemini 2.5 Flash Vision/Text normalizer via standard library urllib (no extra pip package needed)."""
+    if not GEMINI_API_KEY:
+        return None
     try:
-        _get_paddle_engine()
-        print("[OCR] PaddleOCR models loaded and ready.")
-    except Exception:
-        print("[OCR] PaddleOCR failed to load:")
-        traceback.print_exc()
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+        parts: List[Dict[str, Any]] = [{"text": _CANONICAL_PROMPT}]
+        if raw_text and len(raw_text.strip()) > 20:
+            parts.append({"text": f"\nRAW OCR TEXT:\n{raw_text[:8000]}"})
+        if image_png_bytes:
+            parts.append({
+                "inline_data": {
+                    "mime_type": "image/png",
+                    "data": base64.b64encode(image_png_bytes).decode("ascii")
+                }
+            })
+        payload = {
+            "contents": [{"parts": parts}],
+            "generationConfig": {"temperature": 0.0, "maxOutputTokens": 600}
+        }
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            cand_text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+            if "Khasra No:" in cand_text or "District:" in cand_text:
+                return cand_text
+    except Exception as e:
+        print(f"[Normalizer] Gemini fallback to local normalizer ({e})")
+    return None
 
-if OCR_ENGINE == "paddle" and OCR_AVAILABLE:
-    threading.Thread(target=_warm_up_paddle, daemon=True).start()
-
-# ----------------- Universal Multi-Format Land Identity Parser -----------------
+def _call_groq_normalizer(raw_text: str) -> Optional[str]:
+    """Tier-1B: Fast Groq Llama-3.3-70B normalizer if GROQ_API_KEY is configured."""
+    if not GROQ_API_KEY or not raw_text.strip():
+        return None
+    try:
+        url = "https://api.groq.com/openai/v1/chat/completions"
+        payload = {
+            "model": "llama-3.3-70b-versatile",
+            "temperature": 0.0,
+            "max_tokens": 500,
+            "messages": [
+                {"role": "system", "content": _CANONICAL_PROMPT},
+                {"role": "user", "content": raw_text[:8000]}
+            ]
+        }
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {GROQ_API_KEY}"},
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=6) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            cand_text = data["choices"][0]["message"]["content"].strip()
+            if "Khasra No:" in cand_text or "District:" in cand_text:
+                return cand_text
+    except Exception as e:
+        print(f"[Normalizer] Groq fallback to local normalizer ({e})")
+    return None
 
 KNOWN_DISTRICTS = [
     "Ajmer", "Alwar", "Anupgarh", "Balotra", "Banswara", "Baran", "Barmer", "Beawar",
@@ -617,6 +628,174 @@ def _strip_indic(s: str) -> str:
     s = re.sub(r"\(\s*\)", "", s)
     return re.sub(r"[ \t]+", " ", s).strip()
 
+def _local_normalize_to_timeline_format(raw_text: str) -> str:
+    """
+    Tier-2 (100% Offline Pure-Python Normalizer):
+    Pre-processes messy multi-column tables (Testing_realdata1.pdf) and narrative paragraphs
+    (#31-#35) and appends a clean `Timeline2.pdf`-formatted block so `extract_land_identity`
+    always sees a clean single-column structure.
+    """
+    if not raw_text:
+        return ""
+    t = _strip_indic(raw_text.translate(_HOMOGLYPH_MAP).replace("$", ""))
+
+    # Break inline narrative sentences like '... Chomu, Jaipur. Vendee (Buyer): ...' onto separate lines
+    t = re.sub(
+        r"\.\s+(?=(?:Vendee|Vendor|Buyer|Seller|Recorded\s+Holder|Claimant|Location|Identifiers|Khasra|Khata|Plot|Total\s+Area|Consideration|Registration|Mutation|Boundaries)\b)",
+        "\n",
+        t,
+        flags=re.IGNORECASE,
+    )
+    # Break numbered section headers like '1. Location Particulars' or '2. Land Identifiers' onto separate lines
+    t = re.sub(
+        r"\s+(\d+\.\s*(?:Location|Identifier|Person|Property|Land|Owner|History|Registration|Boundary)(?:\s*(?:Details|Particulars))?)",
+        r"\n\1\n",
+        t,
+        flags=re.IGNORECASE,
+    )
+    # Break inline 'Contact: ...' or 'Claimed Share: ...' onto separate lines
+    t = re.sub(r"\s+(?=(?:Contact|Claimed\s*Share|Claimant\s*\/)\s*:)", "\n", t, flags=re.IGNORECASE)
+
+    # Also unpivot multi-column table rows where 3 headers on line N correspond to 3 values on line N+1
+    lines = [ln.strip() for ln in t.splitlines() if ln.strip()]
+    unpivoted = []
+    for idx in range(len(lines) - 1):
+        h_parts = [p.strip() for p in lines[idx].split("|") if p.strip()]
+        v_parts = [p.strip() for p in lines[idx + 1].split("|") if p.strip()]
+        if len(h_parts) >= 2 and len(h_parts) == len(v_parts):
+            for hp, vp in zip(h_parts, v_parts):
+                if ":" not in hp:
+                    unpivoted.append(f"{hp}: {vp}")
+
+    if unpivoted:
+        t = t + "\n---UNPIVOTED_TABLE---\n" + "\n".join(unpivoted)
+    return t
+
+def run_ocr(file_content: bytes, filename: str) -> Tuple[str, float]:
+    file_hash = hashlib.sha256(file_content).hexdigest()
+    if file_hash in _OCR_CACHE and _OCR_CACHE[file_hash][0]:
+        return _OCR_CACHE[file_hash]
+
+    ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
+    text = ""
+    quality = 0.90
+    first_page_png: Optional[bytes] = None
+
+    if ext == "txt":
+        raw_t = file_content.decode("utf-8", errors="ignore").strip()
+        norm_t = _call_gemini_normalizer(raw_t) or _call_groq_normalizer(raw_t) or _local_normalize_to_timeline_format(raw_t)
+        res = (norm_t + "\n" + raw_t, 1.0)
+        _OCR_CACHE[file_hash] = res
+        return res
+
+    if ext in ("png", "jpg", "jpeg", "bmp", "tiff", "tif", "webp"):
+        first_page_png = file_content
+        # If Gemini Vision API is configured, it can read handwritten/complex images directly in <0.7s
+        gemini_text = _call_gemini_normalizer("", first_page_png)
+        if gemini_text:
+            res = (gemini_text, 0.97)
+            _OCR_CACHE[file_hash] = res
+            return res
+
+        if OCR_AVAILABLE:
+            try:
+                text, conf = _ocr_image_bytes(file_content)
+                if len(text.strip()) < 50:
+                    quality = 0.55
+                elif conf is not None:
+                    quality = round(min(0.99, conf), 2)
+                else:
+                    quality = 0.90
+            except Exception:
+                _log_ocr_error("image upload")
+                text = ""
+                quality = 0.0
+        else:
+            quality = 0.0
+
+    elif ext == "pdf":
+        page_pngs = []
+        if FITZ_AVAILABLE:
+            try:
+                doc = fitz.open(stream=file_content, filetype="pdf")
+                text = _extract_pdf_structured_text(doc)
+                if len(doc) > 0 and (len(text.strip()) < 60 or GEMINI_API_KEY):
+                    first_page_png = doc[0].get_pixmap(dpi=150).tobytes("png")
+                if len(text.strip()) < 60 and OCR_AVAILABLE:
+                    dpi = 150 if OCR_ENGINE == "paddle" else 220
+                    for idx in range(min(len(doc), MAX_OCR_PAGES)):
+                        page_pngs.append(doc[idx].get_pixmap(dpi=dpi).tobytes("png"))
+                doc.close()
+            except Exception:
+                _log_ocr_error("PyMuPDF read")
+
+        if len(text.strip()) < 60 and PDF_TEXT_AVAILABLE and not page_pngs:
+            try:
+                reader = PdfReader(io.BytesIO(file_content))
+                text = "\n".join((page.extract_text() or "") for page in reader.pages[:MAX_OCR_PAGES])
+            except Exception:
+                text = ""
+
+        if len(text.strip()) < 60 and not page_pngs and PDF2IMAGE_AVAILABLE and OCR_AVAILABLE:
+            try:
+                dpi = 150 if OCR_ENGINE == "paddle" else 220
+                for page_img in convert_from_bytes(file_content, dpi=dpi, last_page=MAX_OCR_PAGES):
+                    buf = io.BytesIO()
+                    page_img.save(buf, format="PNG")
+                    page_pngs.append(buf.getvalue())
+                if page_pngs:
+                    first_page_png = page_pngs[0]
+            except Exception:
+                _log_ocr_error("pdf2image render")
+
+        if page_pngs and OCR_AVAILABLE and not (GEMINI_API_KEY and first_page_png):
+            ocr_parts = []
+            confs = []
+            for png in page_pngs:
+                try:
+                    p_txt, p_conf = _ocr_image_bytes(png, retry_sparse=False)
+                    if p_txt.strip():
+                        ocr_parts.append(p_txt.strip())
+                    if p_conf is not None:
+                        confs.append(p_conf)
+                except Exception:
+                    _log_ocr_error("scanned-PDF page OCR")
+            ocr_text = "\n".join(ocr_parts).strip()
+            if len(ocr_text) > len(text.strip()):
+                text = ocr_text
+                quality = round(min(0.96, sum(confs) / len(confs)), 2) if confs else 0.82
+        elif text.strip():
+            quality = 0.96
+        else:
+            quality = 0.0
+
+    # Run Stage-1 Canonical Normalizer (Cloud AI if key set, otherwise Local 2D Normalizer)
+    ai_canonical = _call_gemini_normalizer(text, first_page_png) or _call_groq_normalizer(text)
+    local_canonical = _local_normalize_to_timeline_format(text)
+    if ai_canonical:
+        final_text = ai_canonical + "\n---RAW_DOCUMENT---\n" + local_canonical
+        quality = max(quality, 0.96)
+    else:
+        final_text = local_canonical
+
+    res = (final_text.strip(), quality)
+    if res[0]:
+        _OCR_CACHE[file_hash] = res
+    return res
+
+def _warm_up_paddle():
+    try:
+        _get_paddle_engine()
+        print("[OCR] PaddleOCR models loaded and ready.")
+    except Exception:
+        print("[OCR] PaddleOCR failed to load:")
+        traceback.print_exc()
+
+if OCR_ENGINE == "paddle" and OCR_AVAILABLE:
+    threading.Thread(target=_warm_up_paddle, daemon=True).start()
+
+# ----------------- STAGE 2: Land Identity Extractor & Cleaners -----------------
+
 def _clean_identifier_match(raw: Optional[str]) -> Optional[str]:
     if not raw:
         return None
@@ -635,7 +814,7 @@ def clean_location_value(raw: Optional[str], is_village: bool = False) -> Option
     s = _strip_indic(raw).translate(_HOMOGLYPH_MAP).strip()
 
     # 1. Strip leading compound label remnants ('/ Locality:', '/ Urban Locality:', '1st Location:', 'Village:')
-    for _ in range(2):
+    for _ in range(3):
         s = re.sub(
             r"^(?:[\d]+(?:st|nd|rd|th)?\s*)?(?:\/\s*)?(?:Urban\s+Locality|Revenue\s+Village|Locality|Village|Sector|Location|District|Tehsil|Gram|Mauza)\s*(?:\/\s*(?:Urban\s+)?(?:Locality|Sector|Village))?\s*[:\-\.]*\s*",
             "",
@@ -712,7 +891,7 @@ def _parse_indian_amount(raw: str) -> Optional[float]:
     if not raw:
         return None
     s = raw.strip()
-    if re.search(r"\b0\s*\/\-|\b0\.00\b", s):
+    if re.search(r"\b0\s*\/\-|\b0\.00\b|^0$", s):
         return 0.0
     mult = 1.0
     if re.search(r"\b(?:crore|crores|cr\.?)\b", s, re.IGNORECASE):
@@ -756,8 +935,8 @@ def extract_land_identity(text: str):
     if not text:
         return result, confidence
 
-    t_raw = text.translate(_HOMOGLYPH_MAP).replace("$", "")
-    t = _strip_indic(t_raw)
+    # Always run through the local canonical normalizer so inline sentences & grids are structured
+    t = _local_normalize_to_timeline_format(text)
     upper = t.upper()
 
     # Document Type
@@ -774,7 +953,7 @@ def extract_land_identity(text: str):
 
     # 1. Serial / Deed Number
     serial_patterns = [
-        r"(?:Deed|Serial|Stamp|e-Stamp|Document|Certificate)\s*(?:No\.?|N0\.?|Number|#)\s*[:\.\-]?\s*([A-Z0-9][A-Z0-9\-\/]{3,24})",
+        r"(?:Deed|Serial|Stamp|e-Stamp|Document|Certificate)\s*(?:No\.?|N0\.?|Number|#)?\s*[:\.\-]\s*([A-Z0-9][A-Z0-9\-\/]{3,24})",
         r"\bDeed\s*#\s*([A-Z0-9\-\/]{4,24})",
         r"\b((?:MUT|RJ|IN-RJ|SD|DEED)[\-][A-Z0-9\-]{4,24})\b",
     ]
@@ -823,7 +1002,7 @@ def extract_land_identity(text: str):
             break
 
     # 3. Location: District, Tehsil, Village / Locality
-    m_dist = re.search(r"\b(?:District|Distt\.?|Zila)\s*[:\-]?\s*([A-Za-z][A-Za-z\s]{2,20}?)(?:,|\n|\||\.|Tehsil|Village|$)", t, re.IGNORECASE)
+    m_dist = re.search(r"\b(?:District|Distt\.?|Zila)\s*[:\-]\s*([A-Za-z][A-Za-z\s]{2,20}?)(?:,|\n|\||\.|Tehsil|Village|$)", t, re.IGNORECASE)
     if m_dist:
         d_clean = clean_location_value(m_dist.group(1), is_village=False)
         if d_clean:
@@ -836,7 +1015,7 @@ def extract_land_identity(text: str):
                 confidence["district"] = 0.94
                 break
 
-    m_teh = re.search(r"\b(?:Tehsil|Tahsil|Taluka)\s*[:\-]?\s*([A-Za-z][A-Za-z\s]{2,20}?)(?:,|\n|\||\.|Village|Urban|Locality|Sector|District|$)", t, re.IGNORECASE)
+    m_teh = re.search(r"\b(?:Tehsil|Tahsil|Taluka)\s*[:\-]\s*([A-Za-z][A-Za-z\s]{2,20}?)(?:,|\n|\||\.|Village|Urban|Locality|Sector|District|$)", t, re.IGNORECASE)
     if m_teh:
         t_clean = clean_location_value(m_teh.group(1), is_village=False)
         if t_clean:
@@ -846,7 +1025,6 @@ def extract_land_identity(text: str):
         result["tehsil"] = result["district"]
         confidence["tehsil"] = 0.85
 
-    # Village / Urban Locality / Sector (NO variable-length lookbehind; checks prefix in Python!)
     vill_patterns = [
         r"\b(?:Village\s*\/\s*(?:Urban\s*)?(?:Locality|Sector)|Urban\s*Locality|Revenue\s*Village|Village|Locality|Gram|Mauza)\s*[:\-]\s*([^\n\r\|]+(?:\n(?![A-Z\s]{4,}(?:NUMBER|NO|RECORD|IDENTIFIER|PERSON|LOCATION))[^\n\r\|]+)?)",
         r"(?:situated|located|lying)\s+(?:at|in)\s+(?:Village|Gram|Mauza|Locality)?\s*([A-Za-z0-9][A-Za-z0-9\s\-]{2,30}?)(?:,|\.|Tehsil|District|\n)",
@@ -854,7 +1032,6 @@ def extract_land_identity(text: str):
     ]
     for idx_vp, vp in enumerate(vill_patterns):
         for m_v in re.finditer(vp, t, re.IGNORECASE):
-            # Ignore 'R/O Village ...' or 'Resident of Village ...' on the primary pattern
             if idx_vp == 0:
                 prefix = t[max(0, m_v.start() - 18):m_v.start()].lower()
                 if "r/o" in prefix or "resident of" in prefix:
@@ -965,19 +1142,18 @@ def extract_land_identity(text: str):
         confidence["share_hissa"] = 0.96
 
     # 6. Total Area
-    m_bigha = re.search(r"(?:Total\s*Area|Area)\s*[:\-]?\s*([0-9]+(?:\.[0-9]+)?)\s*bigha", t, re.IGNORECASE)
-    if m_bigha:
+    m_bigha = re.search(r"(?:Total\s*Area|Area)\s*[:\-]?\s*([0-9]+(?:\.[0-9]+)?)\s*(?:bigha)?", t, re.IGNORECASE)
+    m_sqyd = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*Sq\.?\s*Yards?", t, re.IGNORECASE)
+    m_ha = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*Ha\b", t, re.IGNORECASE)
+    if m_bigha and float(m_bigha.group(1)) > 0:
         result["total_area"] = float(m_bigha.group(1))
         confidence["total_area"] = 0.96
-    else:
-        m_sqyd = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*Sq\.?\s*Yards?", t, re.IGNORECASE)
-        m_ha = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*Ha\b", t, re.IGNORECASE)
-        if m_sqyd:
-            result["total_area"] = float(m_sqyd.group(1))
-            confidence["total_area"] = 0.94
-        elif m_ha:
-            result["total_area"] = float(m_ha.group(1))
-            confidence["total_area"] = 0.93
+    elif m_sqyd:
+        result["total_area"] = float(m_sqyd.group(1))
+        confidence["total_area"] = 0.94
+    elif m_ha:
+        result["total_area"] = float(m_ha.group(1))
+        confidence["total_area"] = 0.93
 
     sub_matches = re.findall(r"Sub-plot\s*[A-Za-z0-9]*\s*=\s*([0-9\.]+)", t, re.IGNORECASE)
     if sub_matches:
@@ -997,7 +1173,7 @@ def extract_land_identity(text: str):
 
     # 8. Consideration Value
     cons_patterns = [
-        r"CONSIDERATION\s*(?:VALUE|AMOUNT)?\s*[:\-]?\s*(?:\n\s*)?(?:Rs\.?|INR|₹)?\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?|0\/\-)",
+        r"CONSIDERATION\s*(?:VALUE|AMOUNT)?\s*[:\-]?\s*(?:\n\s*)?(?:Rs\.?|INR|₹)?\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?|0\/\-|0)",
         r"(?:Sale\s*Price|Sale\s*Value|Consideration)\s*[:\-]\s*(?:Rs\.?|INR|₹)?\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)",
     ]
     for cp in cons_patterns:
@@ -1020,7 +1196,7 @@ def extract_land_identity(text: str):
         )
         if dm:
             val_d = re.sub(r"\s+", " ", dm.group(1)).strip(" ,;.|")
-            val_d = re.sub(r"\s*\-\-\-CELL_PAIRS\-\-\-.*$", "", val_d).strip()
+            val_d = re.sub(r"\s*\-\-\-(?:CELL_PAIRS|UNPIVOTED_TABLE|RAW_DOCUMENT)\-\-\-.*$", "", val_d).strip()
             if val_d:
                 dir_parts.append(f"{dir_name}: {val_d}")
     if len(dir_parts) >= 2:
@@ -1117,7 +1293,7 @@ def run_validation_rules(data: dict, conn: sqlite3.Connection, current_record_id
     return flags
 
 def repair_existing_records_in_db():
-    """Cleans up existing records in `terra_digitize.db` on startup."""
+    """Automatically normalizes and repairs existing records in `terra_digitize.db` on startup."""
     try:
         conn = sqlite3.connect(DB_FILE, check_same_thread=False)
         conn.row_factory = sqlite3.Row
@@ -1138,7 +1314,12 @@ def repair_existing_records_in_db():
                 continue
 
             extracted, conf = extract_land_identity(raw_text)
-            new_village = extracted["village"] or clean_location_value(r["village"], is_village=True)
+            cleaned_old_village = clean_location_value(r["village"], is_village=True)
+            new_village = extracted["village"] or cleaned_old_village
+            # Prefer the cleaner/shorter village name if old DB had bleed
+            if cleaned_old_village and new_village and len(cleaned_old_village) < len(new_village):
+                new_village = cleaned_old_village
+
             new_district = extracted["district"] or clean_location_value(r["district"], is_village=False)
             new_tehsil = extracted["tehsil"] or clean_location_value(r["tehsil"], is_village=False)
             new_owner = extracted["owner_name"] or clean_extracted_name(r["owner_name"] or "")
@@ -1192,7 +1373,7 @@ def repair_existing_records_in_db():
             ))
         conn.commit()
         conn.close()
-        print("[DB] Existing records cleaned and repaired successfully.")
+        print("[DB] Existing records normalized and repaired successfully.")
     except Exception:
         traceback.print_exc()
 
