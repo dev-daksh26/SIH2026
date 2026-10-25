@@ -554,6 +554,23 @@
     .ocr-acc-note { color:#64748b; font-size:0.75rem; margin-top:0.3rem; }
     .ocr-acc-overall { margin-top:0.5rem; padding-top:0.4rem; border-top:1px dashed var(--border); color:#334155; font-size:0.76rem; }
     #gis-empty { position:absolute; inset:0; z-index:1100; display:flex; align-items:center; justify-content:center; text-align:center; padding:2rem; background:#f8fafc; color:#64748b; font-size:0.88rem; }
+    /* ---------------- Multilingual Language Selector & Badges ---------------- */
+    .lang-view-pill-group {
+      display: inline-flex; background: #f1f5f9; padding: 3px; border-radius: 20px;
+      border: 1.5px solid var(--border); gap: 3px; align-items: center;
+    }
+    .lang-view-btn {
+      border: none; background: transparent; padding: 0.32rem 0.8rem; border-radius: 16px;
+      font-size: 0.74rem; font-weight: 700; color: #64748b; cursor: pointer; transition: all 0.18s ease; font-family: inherit;
+    }
+    .lang-view-btn:hover { color: var(--primary); }
+    .lang-view-btn.active { background: white; color: var(--primary); box-shadow: var(--shadow-sm); }
+    .lang-tag {
+      display: inline-block; font-size: 0.65rem; font-weight: 800; padding: 0.15rem 0.45rem;
+      border-radius: 6px; margin-left: 0.35rem; letter-spacing: 0.04em; text-transform: uppercase; vertical-align: middle;
+    }
+    .lang-tag.lang-hi { background: #fef3c7; color: #b45309; border: 1px solid #fde68a; }
+    .lang-tag.lang-en { background: #e0f2fe; color: #0369a1; border: 1px solid #bae6fd; }
   </style>
 </head>
 <body>
@@ -942,7 +959,14 @@
 
             <!-- Right Panel: Full Grouped Land Identity Extraction Form -->
             <div>
-              <h4 style="margin:0 0 0.5rem 0;">Extracted Land Identity Fields</h4>
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.75rem; flex-wrap:wrap; gap:0.5rem;">
+                <h4 style="margin:0;">Extracted Land Identity Fields</h4>
+                <div class="lang-view-pill-group">
+                  <button type="button" class="lang-view-btn active" id="btn-lang-en" onclick="setReviewLanguage('en')">🔤 English</button>
+                  <button type="button" class="lang-view-btn" id="btn-lang-native" onclick="setReviewLanguage('native')">🕉️ मूल (Hindi)</button>
+                  <button type="button" class="lang-view-btn" id="btn-lang-dual" onclick="setReviewLanguage('dual')">🌐 Dual View</button>
+                </div>
+              </div>
               <form id="verify-form">
                 <input type="hidden" id="edit-id">
 
@@ -1790,9 +1814,12 @@
       }
       records.forEach(r => {
         const tr = document.createElement("tr");
+        const langTag = r.source_language === 'hi'
+          ? `<span class="lang-tag lang-hi" title="Native Hindi Document">HI</span>`
+          : `<span class="lang-tag lang-en" title="English Document">EN</span>`;
         tr.innerHTML = `
-          <td>#${r.id}</td><td>${r.village || '-'}</td><td>${r.khasra_number || '-'}</td>
-          <td>${r.owner_name || '-'}</td>
+          <td>#${r.id}</td><td>${escapeHtml(r.village || r.village_native || '-')}</td><td>${escapeHtml(r.khasra_number || '-')}</td>
+          <td>${escapeHtml(r.owner_name || r.owner_name_native || '-')} ${langTag}</td>
           <td>${isFlagged ? `<span class="badge-flag">${r.validation_flags.length} Flag(s)</span>` : `<span class="badge-status status-${r.status.toLowerCase().replace(/ /g, '-')}">${r.status}</span>`}</td>
           <td>${isUnverifiedPublic(r) ? verifyLockedHtml : `<button class="btn btn-sm" onclick="openReview(${r.id})">${r.status === "Verified" ? "Double Check" : "Verify"}</button>`}</td>
         `;
@@ -1812,7 +1839,8 @@
       const tbody = document.querySelector("#records-table tbody");
       tbody.innerHTML = "";
       const filtered = allRecords.filter(r => {
-        const matchesQuery = (r.khasra_number + r.owner_name + r.village).toLowerCase().includes(query);
+        const fullSearch = ((r.khasra_number || '') + (r.owner_name || '') + (r.owner_name_native || '') + (r.village || '') + (r.village_native || '')).toLowerCase();
+        const matchesQuery = fullSearch.includes(query);
         const matchesStatus = registryStatusFilter === "all" || r.status === registryStatusFilter;
         return matchesQuery && matchesStatus;
       });
@@ -1822,9 +1850,12 @@
       }
       filtered.forEach(r => {
         const tr = document.createElement("tr");
+        const langTag = r.source_language === 'hi'
+          ? `<span class="lang-tag lang-hi" title="Native Hindi Document">HI</span>`
+          : `<span class="lang-tag lang-en" title="English Document">EN</span>`;
         tr.innerHTML = `
-          <td>#${r.id}</td><td>${r.khasra_number || '-'}</td><td>${r.village || '-'}</td>
-          <td>${r.owner_name || '-'}</td><td>${r.total_area != null ? r.total_area : '-'}</td>
+          <td>#${r.id}</td><td>${escapeHtml(r.khasra_number || '-')}</td><td>${escapeHtml(r.village || r.village_native || '-')}</td>
+          <td>${escapeHtml(r.owner_name || r.owner_name_native || '-')} ${langTag}</td><td>${r.total_area != null ? r.total_area : '-'}</td>
           <td><span class="badge-status status-${r.status.toLowerCase().replace(/ /g, '-')}">${r.status}</span></td>
           <td>${isUnverifiedPublic(r) ? verifyLockedHtml : `<button class="btn btn-sm" onclick="openReview(${r.id})">${r.status === "Verified" ? "Double Check" : "Verify"}</button>`}</td>
         `;
@@ -2309,18 +2340,31 @@
       }
     });
 
-    async function openReview(id) {
-      const rec = allRecords.find(r => r.id === id);
-      if (!rec) return;
+    let currentReviewRecord = null;
+    let currentReviewLang = "en";
 
-      document.getElementById("edit-id").value = rec.id;
-      currentGisRecord = rec;
-      showLeftPanel("softcopy");
+    function setReviewLanguage(lang) {
+      currentReviewLang = lang;
+      document.getElementById("btn-lang-en")?.classList.toggle("active", lang === "en");
+      document.getElementById("btn-lang-native")?.classList.toggle("active", lang === "native");
+      document.getElementById("btn-lang-dual")?.classList.toggle("active", lang === "dual");
+
+      if (!currentReviewRecord) return;
+      const rec = currentReviewRecord;
+
+      function pickVal(enVal, natVal) {
+        if (lang === "native") return natVal || enVal || "";
+        if (lang === "dual") {
+          if (enVal && natVal && enVal !== natVal) return `${enVal} (${natVal})`;
+          return enVal || natVal || "";
+        }
+        return enVal || natVal || "";
+      }
 
       // 1. Location
-      setupField("edit-district", "ci-district", rec.district, rec.confidence_scores?.district || 0.96);
-      setupField("edit-tehsil", "ci-tehsil", rec.tehsil, rec.confidence_scores?.tehsil || 0.94);
-      setupField("edit-village", "ci-village", rec.village, rec.confidence_scores?.village || 0.95);
+      setupField("edit-district", "ci-district", pickVal(rec.district, rec.district_native), rec.confidence_scores?.district || 0.96);
+      setupField("edit-tehsil", "ci-tehsil", pickVal(rec.tehsil, rec.tehsil_native), rec.confidence_scores?.tehsil || 0.94);
+      setupField("edit-village", "ci-village", pickVal(rec.village, rec.village_native), rec.confidence_scores?.village || 0.95);
 
       // 2. Identifiers
       setupField("edit-khasra", "ci-khasra", rec.khasra_number, rec.confidence_scores?.khasra_number || 0.94);
@@ -2329,20 +2373,34 @@
       setupField("edit-property-id", "ci-property-id", rec.property_id, rec.confidence_scores?.property_id || 0.92);
 
       // 3. Person / Holding
-      setupField("edit-owner", "ci-owner", rec.owner_name, rec.confidence_scores?.owner_name || 0.92);
-      setupField("edit-seller", "ci-seller", rec.seller_name, rec.confidence_scores?.seller_name || 0.90);
+      setupField("edit-owner", "ci-owner", pickVal(rec.owner_name, rec.owner_name_native), rec.confidence_scores?.owner_name || 0.92);
+      setupField("edit-seller", "ci-seller", pickVal(rec.seller_name, rec.seller_name_native), rec.confidence_scores?.seller_name || 0.90);
       setupField("edit-share", "ci-share", rec.share_hissa, rec.confidence_scores?.share_hissa || 0.95);
 
       // 4. Property Details
       setupField("edit-area", "ci-area", rec.total_area, rec.confidence_scores?.total_area || 0.95);
-      setupField("edit-land-use", "ci-land-use", rec.land_use, rec.confidence_scores?.land_use || 0.93);
+      setupField("edit-land-use", "ci-land-use", pickVal(rec.land_use, rec.land_use_native), rec.confidence_scores?.land_use || 0.93);
       setupField("edit-consideration", "ci-consideration", rec.consideration_amount, rec.confidence_scores?.consideration_amount || 0.98);
-      setupField("edit-boundaries", "ci-boundaries", rec.boundaries_desc, rec.confidence_scores?.boundaries_desc || 0.88);
+      setupField("edit-boundaries", "ci-boundaries", pickVal(rec.boundaries_desc, rec.boundaries_desc_native), rec.confidence_scores?.boundaries_desc || 0.88);
 
       // 5. History & Registration
       setupField("edit-reg-date", "ci-reg-date", rec.registration_date, rec.confidence_scores?.registration_date || 0.96);
       setupField("edit-mut-date", "ci-mut-date", rec.mutation_date, rec.confidence_scores?.mutation_date || 0.85);
       setupField("edit-serial", "ci-serial", rec.serial_number, rec.confidence_scores?.serial_number || 0.95);
+    }
+
+    async function openReview(id) {
+      const rec = allRecords.find(r => r.id === id);
+      if (!rec) return;
+
+      currentReviewRecord = rec;
+      currentGisRecord = rec;
+      document.getElementById("edit-id").value = rec.id;
+      showLeftPanel("softcopy");
+
+      // Set initial view language based on document or user preference
+      currentReviewLang = "en";
+      setReviewLanguage("en");
       initOcrBaseline(rec);
 
       // Authenticated Soft-Copy Viewer (Loads PDFs & Images as Blob URLs)
@@ -2406,24 +2464,33 @@
       const id = document.getElementById("edit-id").value;
       const payload = {
         district: document.getElementById("edit-district").value,
+        district_native: currentReviewRecord?.district_native || null,
         tehsil: document.getElementById("edit-tehsil").value,
+        tehsil_native: currentReviewRecord?.tehsil_native || null,
         village: document.getElementById("edit-village").value,
+        village_native: currentReviewRecord?.village_native || null,
         khasra_number: document.getElementById("edit-khasra").value,
         khata_number: document.getElementById("edit-khata").value,
         plot_number: document.getElementById("edit-plot").value,
         property_id: document.getElementById("edit-property-id").value,
         owner_name: document.getElementById("edit-owner").value,
+        owner_name_native: currentReviewRecord?.owner_name_native || null,
         seller_name: document.getElementById("edit-seller").value,
+        seller_name_native: currentReviewRecord?.seller_name_native || null,
         buyer_name: document.getElementById("edit-owner").value,
+        buyer_name_native: currentReviewRecord?.owner_name_native || null,
         share_hissa: document.getElementById("edit-share").value,
         total_area: parseFloat(document.getElementById("edit-area").value) || null,
         land_use: document.getElementById("edit-land-use").value,
+        land_use_native: currentReviewRecord?.land_use_native || null,
         boundaries_desc: document.getElementById("edit-boundaries").value,
+        boundaries_desc_native: currentReviewRecord?.boundaries_desc_native || null,
         consideration_amount: parseFloat(document.getElementById("edit-consideration").value) || null,
         registration_date: document.getElementById("edit-reg-date").value || null,
         mutation_date: document.getElementById("edit-mut-date").value || null,
         serial_number: document.getElementById("edit-serial").value || null,
-        document_type: "Sale Deed",
+        document_type: currentReviewRecord?.document_type || "Sale Deed",
+        document_type_native: currentReviewRecord?.document_type_native || null,
         status: targetStatus
       };
 
